@@ -1,74 +1,76 @@
 # CodeCritic
 
+[![CI](https://github.com/learnerview/CodeCritic/actions/workflows/ci.yml/badge.svg)](https://github.com/learnerview/CodeCritic/actions/workflows/ci.yml)
+
 CodeCritic is a deterministic Java merge gate. It runs the tests affected by a
 pull request, compares base and head failures, and fails only on the policy you
-choose. The gate does not depend on an LLM.
+choose. It does not use an LLM.
 
-The web dashboard is a secondary demo of the same deterministic analyzers plus
-advisory LLM synthesis. It is useful for showing the analysis surface, but it is
-not required for CI.
+Use it when a full test suite is too slow for every pull request but you still
+need a trustworthy pass/fail decision. CodeCritic maps changed paths to Maven or
+Gradle modules, expands the selection through module dependencies, and falls
+back to the full suite whenever the mapping is uncertain.
 
-## What the gate does
+## What it does
 
 1. Maps changed paths to Maven or Gradle modules.
 2. Expands the selection through declared module dependencies, so a shared
    module change also runs dependent modules.
-3. Falls back to the full suite when module selection is uncertain.
+3. Falls back to the full suite for build-file changes, root-level changes,
+   single-module projects, unmapped changes, or a selected module missing at
+   either revision.
 4. Runs base and head in isolated git worktrees inside Docker.
-5. Compares per-test failures, so a passing suite that was already failing
-   before the PR is not reported as a new regression.
+5. Compares per-test failures, so a suite that was already failing before the
+   pull request is not reported as a new regression.
 6. Emits HTML or JSON evidence and returns a stable exit code.
 
-The primary public interface is the `verification` CLI and the root
-`action.yml`. The Spring server and Python agent are the demo/dashboard layer.
+## Requirements
 
-## Build and run the gate
+- Java 21
+- Maven 3.9 or newer
+- Docker for any run that executes tests
+- A Git repository with both revisions available locally
 
-```powershell
-# The verification CLI does not need MongoDB, Redis, or Python.
-mvn -B -pl verification -am package
-java -jar verification\target\codecritic-verification.jar `
-  --repo . --base main --head HEAD `
-  --run-tests --select modules --fail-on new-failure `
+The CLI does not need MongoDB, Redis, Python, or a server process.
+
+## Build
+
+```bash
+mvn -B package
+```
+
+The shaded CLI is `target/codecritic.jar`.
+
+## Run the gate
+
+```bash
+java -jar target/codecritic.jar \
+  --repo . --base main --head HEAD \
+  --run-tests --select modules --fail-on new-failure \
   --format json --out codecritic-report.json
 ```
 
-Without `--run-tests`, the CLI produces a callable-level impact report only.
-Docker is a hard requirement for test execution; there is no host fallback.
+Without `--run-tests`, CodeCritic produces a callable-level impact report only.
 
 | Policy | Fails when |
 |---|---|
 | `new-failure` (default) | head has a failure that base did not have |
 | `any-failure` | head has any test failure |
 | `high-risk` | risk band is `HIGH` and the head test result is healthy |
-| `never` | never; always writes the report and exits `0` |
+| `never` | never; writes the report and exits `0` |
 
-Exit codes: `0` pass/disabled, `1` gate failure, `2` usage/git/report-write
-error. Use `--select all` to force the full suite.
+Exit codes:
 
-Module selection falls back to the full suite for build-file changes,
-root-level changes, single-module projects, unmapped changes, a selected module
-missing at either revision, or a root module that depends on the selection. The
-dependency graph is best-effort: use `--select all` when dynamic Gradle logic or
-unresolved Maven properties make the graph uncertain.
+- `0`: report written and the selected gate passed, or gating was disabled.
+- `1`: gate failure.
+- `2`: argument, Git, or report-write error.
+
+Use `--select all` to force the full suite.
 
 Docker runs with `--network none` by default. Set
 `CODECRITIC_SANDBOX_NETWORK=bridge` only when Maven or Gradle must download
 dependencies; build scripts are untrusted and bridge networking permits outbound
 traffic.
-
-Run the full build gate:
-
-```powershell
-mvn -B clean verify
-```
-
-This compiles both modules, runs all tests, applies the JaCoCo threshold, and
-fails on Javadoc warnings for public types and members. The `java-server`
-integration tests need MongoDB on `localhost:27017`; without it, start just the
-database with `docker compose up -d mongo`, or build only the CLI with
-`mvn -B -pl verification package`. Generated API docs are written to
-`java-server/target/reports/apidocs` and `verification/target/reports/apidocs`.
 
 ## Use the GitHub Action
 
@@ -88,44 +90,49 @@ enough history to resolve the base commit:
     sandbox-network: bridge
 ```
 
-See [examples/github-actions/codecritic-gate.yml](examples/github-actions/codecritic-gate.yml)
-for a complete workflow and [examples/github-actions/README.md](examples/github-actions/README.md)
-for inputs and security notes.
+Pin the action to a release tag or commit SHA for production use. See
+[examples/github-actions/codecritic-gate.yml](examples/github-actions/codecritic-gate.yml)
+for a complete workflow and
+[examples/github-actions/README.md](examples/github-actions/README.md) for
+inputs and security notes.
 
-## How it works
+## Documentation
 
+- [CLI and report reference](docs/cli.md): options, exit codes, report shape.
 - [Analysis algorithms](docs/analysis-algorithms.md): callable diff, impact and
   risk scoring, module discovery, reverse dependency closure, failure
   comparison, Docker sandboxing, gate decisions.
-- [Architecture](docs/architecture.md): service boundaries, verification flow,
-  concurrency, idempotent jobs, observability.
-- [CLI and API reference](docs/api.md): options, exit codes, HTTP routes.
+- [Architecture](docs/architecture.md): verification flow, isolation, and
+  failure handling.
 - [Known limitations](docs/known-limitations.md): what is heuristic and what
   falls back to the full suite.
-- [Benchmark](docs/benchmark.md): full-suite vs module-aware runtime harness.
+- [Benchmark](docs/benchmark.md): full-suite versus module-aware runtime
+  harness.
 
-## Run the dashboard demo
-
-`docker-compose.yml` starts the Java server, Python agent, MongoDB, and Redis
-with the development profile and local demo credentials:
+## Verify
 
 ```bash
-docker compose up --build
-curl http://localhost:8080/health
-curl http://localhost:8000/health
+mvn -B clean verify
 ```
 
-Open `http://localhost:8080` for the dashboard. The demo account is `admin` /
-`admin`; these values are accepted only because Compose sets
-`SPRING_PROFILES_ACTIVE=dev`. Supply `GROQ_API_KEY` or `OPENAI_API_KEY` to enable
-LLM synthesis; without either key, AI routes degrade to deterministic output.
+This runs the test suite, applies the Javadoc warning gate, and builds the
+shaded CLI. Generated API docs are written to `target/reports/apidocs`.
 
-The Java service calls the Python agent only through its internal
-`PythonAgentClient`. Set `PYTHON_AGENT_TOKEN` to the same random secret in both
-services; Python review endpoints fail closed without it. For local-only runs
-you can set `ALLOW_INSECURE_AGENT=1`, but never on a reachable deployment. User
-JWTs are accepted by Java and are never used as Python service credentials.
+The end-to-end fixture builds a two-module Maven repository, changes `lib`, and
+asserts that the gate selects `app` and exits `1` on the dependent failure:
 
 ```bash
-docker compose down
+mvn -B package -DskipTests
+CODECRITIC_SANDBOX_NETWORK=bridge bash scripts/e2e-module-gate.sh
 ```
+
+## Scope
+
+CodeCritic is a merge gate, not a linter or a code-review chatbot. It does not
+prove correctness. It records the tests it ran, the failures it observed, and
+the policy decision it made. Differential execution is limited to Maven and
+Gradle projects that emit Surefire or Gradle XML test results.
+
+## License
+
+MIT

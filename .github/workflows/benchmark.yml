@@ -1,4 +1,4 @@
-name: Verification Gate Benchmark
+name: CodeCritic Benchmark
 
 on:
   workflow_dispatch:
@@ -34,8 +34,8 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
-      - name: Build verification CLI
-        run: mvn -B -pl verification -am package -DskipTests
+      - name: Build CodeCritic CLI
+        run: mvn -B package -DskipTests
       - name: Benchmark full suite vs module-aware suite
         env:
           REPOSITORY: ${{ inputs.repository }}

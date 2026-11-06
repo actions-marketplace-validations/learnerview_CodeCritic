@@ -11,7 +11,7 @@ startup, dependency resolution, both test runs, and report generation.
 
 ## Run in GitHub Actions
 
-`Verification Gate Benchmark` is manual:
+`CodeCritic Benchmark` is manual:
 
 ```bash
 gh workflow run benchmark.yml \
@@ -30,7 +30,7 @@ back to the full suite and there is no benchmark signal.
 Docker and Java 21 are required:
 
 ```bash
-mvn -B -pl verification -am package -DskipTests
+mvn -B package -DskipTests
 CODECRITIC_SANDBOX_NETWORK=bridge \
   bash scripts/benchmark-module-gate.sh \
   https://github.com/assertj/assertj.git <base-sha> <head-sha>

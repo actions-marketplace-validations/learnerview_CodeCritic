@@ -3,11 +3,5 @@ target/
 *.class
 *.jar
 *.log
-venv/
-__pycache__/
-*.pyc
 .env
 .DS_Store
-python-agent/__pycache__/
-java-server/target/
-python-agent/.pytest_cache/

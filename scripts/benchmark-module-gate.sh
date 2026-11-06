@@ -11,12 +11,12 @@ REPO_URL="$1"
 BASE="$2"
 HEAD="$3"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-JAR="${CODECRITIC_JAR:-$ROOT/verification/target/codecritic-verification.jar}"
+JAR="${CODECRITIC_JAR:-$ROOT/target/codecritic.jar}"
 TEST_TIMEOUT="${CODECRITIC_BENCHMARK_TIMEOUT:-1200}"
 
 if [ ! -f "$JAR" ]; then
-  echo "Missing verification jar: $JAR" >&2
-  echo "Run: mvn -B -pl verification -am package -DskipTests" >&2
+  echo "Missing CodeCritic jar: $JAR" >&2
+  echo "Run: mvn -B package -DskipTests" >&2
   exit 2
 fi
 

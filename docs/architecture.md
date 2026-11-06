@@ -1,152 +1,149 @@
 # Architecture
 
-CodeCritic has two services connected over HTTP plus a standalone verification engine: a **Java analysis server**, a **Python LLM orchestrator**, and a **Java change-verification CLI**. This split keeps deterministic analysis on the JVM (where JavaParser, SpotBugs, git diffing, and Docker execution live) and AI orchestration in Python (where the LLM ecosystem is strongest).
+CodeCritic is one Java CLI. It answers three questions about a change between
+two Git refs:
 
-## Components
+1. Which callables changed?
+2. Which callers, tests, and modules are likely affected?
+3. Do the affected tests prove a behavioral difference?
 
-| Component | Stack | Responsibility |
-|---------|-------|----------------|
-| `java-server` | Spring Boot 4.1, Java 21, JavaParser, jjwt | Deterministic analysis: complexity, bug detection, JUnit scaffolds; auth; optional Redis-backed async jobs |
-| `python-agent` | FastAPI, Pydantic, httpx | Orchestrates the Java service, then synthesizes reviews/test-suites via an LLM (Groq primary, OpenAI fallback) |
-| `verification` | Java 21, JavaParser, picocli, Jackson | Standalone callable-level diff, impact/risk analysis, optional differential tests in Docker, and HTML/JSON reports |
+The CLI can stop after impact analysis or run the project's test suites in
+isolated Docker sandboxes and apply a gate policy.
 
-## Control flow
-
-```mermaid
-flowchart TB
-    classDef client fill:#2d3748,stroke:#4a5568,color:#fff;
-    classDef java fill:#b07219,color:#fff;
-    classDef python fill:#3572A5,color:#fff;
-    classDef infra fill:#38a169,color:#fff;
-
-    User(("User"))
-    UI["Dashboard\n(CodeMirror)"]:::client
-    SEC["JWT Filter"]:::java
-    API["API Controllers\n(Analysis/Auth/Config)"]:::java
-    SVC["AnalysisService"]:::java
-    STR["Strategies (Complexity/Bugs/Tests)"]:::java
-    PY["FastAPI Agent"]:::python
-    LLM["LLM Synthesis"]:::python
-    GROQ["Groq / OpenAI"]:::python
-    REDIS[("Redis Queue")]:::infra
-
-    User --> UI
-    UI -->|"JWT on every request"| SEC
-    SEC --> API
-    API -->|basic analysis\n/complexity /bugs /generate-test| SVC
-    API -->|AI features\n/review /generate-tests /analyze-repository /debug| PY
-    PY -->|service JWT\ndeterministic analysis\n/complexity /bugs /generate-test| SEC
-    SVC --> STR
-    SVC -->|async jobs| REDIS
-    PY --> LLM --> GROQ
-```
-
-The browser calls the Java backend only. The Java backend is the single public API boundary; the Python agent is internal.
-
-- Java directly handles deterministic analysis (`/api/complexity`, `/api/bugs`, `/api/generate-test`) and auth/config.
-- Java calls the internal Python agent for AI-powered features (`/review`, `/generate-tests`, `/analyze-repository`, `/debug`).
-- The Python agent calls back into the Java backend for deterministic analysis, then returns the synthesized review to Java, which relays it to the browser.
-
-## Verification engine
-
-The verification module is a separate Java CLI, not an HTTP endpoint on `java-server`. It answers a different question from snippet analysis: *what callables changed between two git refs, what is likely to be affected, and can a candidate test demonstrate a behavioral difference?*
+## Verification flow
 
 ```mermaid
 flowchart LR
-    REFS["git refs\nbase -> head"] --> CHANGE["GitChangeSource\nchanged .java files"]
+    REFS["git refs\nbase -> head"] --> CHANGE["GitChangeSource\nchanged paths"]
     CHANGE --> DIFF["JavaDiffAnalyzer\ncallable-level diff"]
     DIFF --> INDEX["ProjectIndex\nhead source + callers/tests"]
     INDEX --> IMPACT["ImpactAnalyzer\ncallers, tests, complexity, risk"]
     IMPACT --> REPORT["VerificationReportBuilder\nsummary + evidence"]
-    CHANGE --> WORKTREES["ProjectTestRunner\nisolated base/head worktrees"]
+    CHANGE --> MODULES["ModuleDiscovery + ModuleGraph\nchanged modules + dependents"]
+    MODULES --> WORKTREES["ProjectTestRunner\nisolated base/head worktrees"]
     WORKTREES --> DOCKER["DockerSandboxRunner\nMaven/Gradle test execution"]
-    DOCKER --> CLASSIFY["TestRunClassifier +\nDifferentialTestClassifier"]
-    CLASSIFY --> REPORT
+    DOCKER --> CLASSIFY["TestRunClassifier +\nFailureComparison"]
+    CLASSIFY --> GATE["GateEvaluator\npolicy decision"]
     REPORT --> OUT["HTML or JSON report"]
+    GATE --> OUT
 ```
 
-Key properties:
+## Change detection
 
-- **Callable identity** is the fully qualified class plus method name plus parameter types. Constructors use `<init>`. Bodies, signatures, and cyclomatic complexity are compared, so a line move alone is not reported as a behavioral change.
-- **Impact and risk are heuristics for prioritization**, not a proof of reachability. Production callers are indexed by method name and test files by path/selector/class-name matches.
-- **Differential execution is opt-in** with `--run-tests` or `--test-source`. It creates temporary git worktrees for both refs, injects a candidate test into both, and runs the project's Maven or Gradle adapter inside Docker. With `--select modules`, changed paths are mapped to discovered Maven/Gradle modules and expanded through declared module dependencies; the engine falls back to the full suite whenever the mapping is uncertain.
-- **The CLI is a gate**, not just a report writer. `--fail-on new-failure|any-failure|high-risk|never` controls the exit code. `new-failure` fails on newly introduced test failures, `any-failure` fails on any head test failure, `high-risk` fails when the risk band is `HIGH` and the head is healthy, and `never` always passes. Setup, git, and argument errors exit `2`.
-- **Docker is a hard boundary** for test execution. There is no host fallback. The sandbox drops capabilities, disables privilege escalation, limits PIDs/memory/CPU, uses a read-only root filesystem with a writable `/tmp`, and defaults to `--network none`.
-- **One candidate test is supported per run.** Stability checking repeats `F2P`/`P2F` candidates and reports `FLAKY` if the verdict changes.
-- **Reports are artifacts**: JSON is machine-readable; HTML is a self-contained reviewer view. Every claim carries an evidence id so a reviewer can trace it back to a file/line or test result.
+`GitChangeSource` resolves both refs with `git rev-parse`, reads changed paths
+with `git diff --name-status -M -z`, and loads the head source tree once through
+`git ls-tree` plus a batched blob reader.
 
-The report is written before the gate verdict is applied. A gate failure returns `1`; a passing or disabled gate returns `0`; argument, git, and report-write errors return `2`.
+`JavaDiffAnalyzer` parses both revisions with JavaParser. Each callable gets a
+stable identity:
 
-## Java layer (the analysis engine)
+```text
+<fully-qualified-class>#<method-name>(<parameter-types>)
+```
 
-The controller layer only talks to `AnalysisService`, a thin facade:
+Constructors use `<init>`. Bodies, signatures, and cyclomatic complexity are
+compared, so a line move alone is not reported as a behavioral change.
 
-- `AnalysisServiceImpl` delegates each concern:
-  - Complexity → `ComplexityAnalyzer` (Strategy)
-  - Bugs → `BugDetector` (Composite of pattern + cached SpotBugs)
-  - Tests → `TestGenerator` (Strategy)
-  - Jobs → `JobCoordinator` (Adapter over SimplyDone4J, wrapped by a resilient decorator)
+## Impact analysis
 
-New analysis types are added by implementing the relevant interface — `ComplexityAnalyzer`, `BugDetector` or `TestGenerator` — as a Spring `@Component` and injecting it where needed; the wiring is ordinary constructor injection (Open/Closed Principle).
+`ProjectIndex` indexes production callers by method name and test files by path,
+selector, and class-name matches. `ImpactAnalyzer` combines caller counts,
+affected tests, complexity, and method-change kind into a risk score.
 
-### Thread-safety & concurrency
+This is a prioritization heuristic, not a reachability proof. It does not
+resolve overloads, inheritance, interfaces, reflection, or generated call sites.
 
-- **SpotBugs isolation**: each run writes to a fresh `UUID` temp directory (`SpotBugsRunner`), preventing collisions under parallel reviews. The `spotbugs` CLI and `javac` are installed in the Docker image, enabling full SpotBugs analysis alongside the pattern detector.
-- **SpotBugs cache**: `CachedSpotBugsBugDetector` keys results by SHA-256 of source + detector version. It is a synchronized, access-ordered `LinkedHashMap` bounded to 256 entries with LRU eviction, so repeated analysis of identical code skips recompilation without unbounded memory growth.
+## Module selection
 
-### Idempotent async jobs
+`ModuleDiscovery` reads Maven `<module>` entries and Gradle `include(...)`
+entries. `ModuleGraph` builds a directed graph and `ModulePlan` expands the
+changed modules through reverse dependencies, so a shared module change runs its
+dependents.
 
-`SimplyDoneJobCoordinator.sha256Hex(jobType, payload)` derives a deterministic idempotency key by hashing the job type plus a **canonical JSON encoding of the full payload**: the payload is serialized with an `ObjectMapper` configured with `SORT_PROPERTIES_ALPHABETICALLY` and `ORDER_MAP_ENTRIES_BY_KEYS`, so map keys are sorted at *every* nesting level while list order is preserved (list order is part of a job's identity). Identical submissions therefore always produce the same key regardless of map iteration order, and structurally different payloads cannot collide — the old flat `key=value` concatenation let `{a="1b=2"}` and `{a="1", b="2"}` fold into the same pre-hash string. Retrying the same submission returns the same key, so SimplyDone4J does not create duplicate work.
+Selection falls back to the full suite when:
 
-Two failure modes deliberately do **not** fall back to a weaker key: a payload that cannot be canonically serialized (`IllegalStateException`), and a JVM without SHA-256 (`IllegalStateException`). Substituting a lossy key would silently merge distinct jobs, which is exactly the collision the canonical form exists to prevent.
+- a build file changed
+- a changed path is at the repository root
+- the project has only one module
+- a changed path maps to no module
+- a selected module is missing at either revision
+- a root module depends on the selection
+- the graph cannot be built confidently
 
-The producer passed to the queue is the originating identity qualified by the job type (e.g. `alice-complexity-analysis`), so ownership stays scoped to one job type for the same user. Idempotency still holds because the same user + job type + content yields the same producer + key.
+The fallback is deliberate: under-selection is worse than a slow run.
 
-Handlers are registered with the library at startup by `SimplyDoneHandlerRegistrar`; SimplyDone4J dispatches queued jobs only through its `HandlerRegistry`, so job types with no registered handler are rejected with "No handler registered".
+## Differential execution
 
-**Graceful degradation.** `ResilientJobCoordinator` is the `@Primary` `JobCoordinator`. If the queue backend is unavailable (Redis/Mongo down) it catches the failure and runs the job on a bounded `ThreadPoolExecutor` (core 2 / max 4 / queue 50, mirroring `simplydone4j.executor`), retaining results in a synchronized LRU capped at 256 entries with a 5-minute TTL — so the submit → poll contract still resolves. A queue-depth rejection (`QueueFullException`) is **not** downgraded to local execution; it propagates so the caller can answer `503`. Job status reads distinguish a genuinely unknown id (`JobNotFoundException` → `null` → `404`) from an infrastructure fault (propagated → `5xx`), and terminal statuses the UI cannot render (`DLQ`, `CANCELLED`) are reported as `FAILEDWithError` so the poller stops instead of spinning.
+`ProjectTestRunner` creates temporary Git worktrees for the base and head
+revisions. `MavenProjectAdapter` or `GradleProjectAdapter` discovers the test
+command and parses Surefire or Gradle XML results.
 
-## Python layer (the orchestrator)
+`DockerSandboxRunner` executes each command inside a bounded container:
 
-`agent.py` provides typed HTTP wrappers (`get_complexity`, `find_bugs`, `generate_test`) that keep the Java calls mockable, plus the orchestration pipelines:
+- no network by default
+- dropped capabilities
+- no privilege escalation
+- bounded PIDs, memory, and CPU
+- read-only root filesystem with writable `/tmp`
+- captured stdout/stderr with a byte cap
+- a hard process timeout
 
-- `run_review_pipeline` — deterministic analysis (complexity, bug findings, JUnit scaffolds) → a single-call LLM synthesis of the review (the frontend already requests the full AI test suite separately via `/generate-tests`, so it is not regenerated here)
-- `generate_full_test_suite` — JUnit suite with real assertions using findings as context
-- `analyze_github_repository` — clone via codeload/API, per-file analysis, deterministic repo metrics, then LLM summary
-- `analyze_debug_issue` — source + error log + static findings → root-cause diagnosis
+Docker is a hard boundary. There is no host fallback.
 
-`groq_llm.py` wraps LLM providers with retry (tenacity) on transient failures (network, 429, 5xx) and provider fallback. Provider-specific parsing is isolated here so the rest of the agent stays provider-agnostic.
+`TestRunClassifier` and `FailureComparison` compare failed-test identities. This
+distinguishes a new regression from a suite that was already failing before the
+change.
 
-## Observability
+## Gate decisions
 
-- Both services emit **structured JSON logs** (Java via `logstash-logback-encoder`, Python via `python-json-logger`). The Python agent attaches a per-request id; the Java server does **not** yet propagate a correlation id across the queue lifecycle — see [known-limitations](known-limitations.md).
-- `GET /api/metrics` (Java) reports analysis counts, per-type latency, and SpotBugs timing. The SpotBugs LRU cache tracks `hits()`/`misses()`/`size()` internally, but those are not yet exposed on this endpoint.
-- `GET /metrics` (Python) reports request counts, status codes, and latency percentiles.
+`GateEvaluator` applies the requested policy:
+
+| Policy | Fails when |
+|---|---|
+| `new-failure` | head has a failure that base did not have |
+| `any-failure` | head has any test failure |
+| `high-risk` | risk band is `HIGH` and the head test result is healthy |
+| `never` | never |
+
+The report is written before the exit code is applied. A gate failure returns
+`1`; a passing or disabled gate returns `0`; argument, Git, and report-write
+errors return `2`.
+
+## Reports
+
+`VerificationReportBuilder` records changed files, method impacts, risk,
+warnings, and an evidence ledger. Every claim carries an evidence id so a
+reviewer can trace it to a file, line, or test result.
+
+- JSON is machine-readable.
+- HTML is a self-contained reviewer view.
 
 ## Repository layout
 
+```text
+src/main/java/com/codecritic/
+  change/    Git change loading, Java parsing, callable diff, project index
+  impact/    callers, affected tests, complexity, risk scoring
+  exec/      worktrees, module discovery/graph, Maven/Gradle adapters,
+             Docker sandbox, process runner, failure comparison, classifiers
+  report/    evidence/report builders, gate policy, HTML/JSON renderers
+  cli/       picocli command
+  CodeCritic.java
+src/test/java/com/codecritic/
+  Unit and end-to-end tests, including module graph and fallback behavior
+docs/
+  cli.md, architecture.md, analysis-algorithms.md,
+  known-limitations.md, benchmark.md
+scripts/
+  e2e-module-gate.sh, benchmark-module-gate.sh
 ```
-java-server/src/main/java/com/codecritic/
-  analysis/          Analyzer/detector/generator interfaces + impl/
-  config/            WebSecurityConfig, JwtProperties, RedisConfig, SimplyDone4J wiring, DefaultUserInitializer
-  controller/        AnalysisController, AuthController, ConfigController, FrontendController, HealthController
-  dto/               Transport records
-  exception/         Global error handling
-  job/               JobCoordinator adapter over SimplyDone4J + resilient fallback decorator
-  metrics/           AnalysisMetrics registry
-  model/ repository/ User entity + repository
-  security/          JWT provider + auth filter
-  service/           AnalysisService + AuthService facades
-python-agent/
-  app.py             FastAPI surface (CORS, rate limit, payload limits)
-  agent.py           Tool wrappers + orchestration pipelines
-  groq_llm.py        LLM provider wrapper (retry + fallback)
-verification/src/main/java/com/codecritic/
-  change/            GitChangeSource, JavaDiffAnalyzer, JavaMethodExtractor, ProjectIndex
-  impact/            ImpactAnalyzer, risk scoring records
-  exec/              ProjectTestRunner, DockerSandboxRunner, Maven/Gradle adapters, ModuleDiscovery,
-                     ModuleGraph, ModulePlan, FailureComparison, classifiers
-  report/            VerificationService, evidence/report builders, GatePolicy/GateEvaluator,
-                     HTML/JSON renderers
-  cli/               CodeCriticCommand (picocli)
-```
+
+## Failure handling
+
+- Git errors, invalid arguments, and report-write failures exit `2`.
+- Missing Docker, missing build tooling, compile failures, and test timeouts are
+  recorded as test setup or execution failures.
+- A broken head test result fails the gate even under `new-failure`, because the
+  tool cannot prove the absence of a regression.
+- Module selection never silently narrows to an unsafe subset; uncertain input
+  falls back to the full suite.

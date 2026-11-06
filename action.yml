@@ -69,10 +69,10 @@ runs:
         distribution: temurin
         java-version: ${{ inputs['java-version'] }}
 
-    - name: Build CodeCritic verification CLI
+    - name: Build CodeCritic CLI
       shell: bash
       working-directory: ${{ github.action_path }}
-      run: mvn -B -pl verification -am package -DskipTests
+      run: mvn -B package -DskipTests
 
     - name: Run merge gate
       id: gate
@@ -88,7 +88,7 @@ runs:
         INPUT_MAX_OUTPUT_BYTES: ${{ inputs['max-output-bytes'] }}
         INPUT_REPORT: ${{ steps.report_path.outputs.path }}
       run: |
-        java -jar "${{ github.action_path }}/verification/target/codecritic-verification.jar" \
+        java -jar "${{ github.action_path }}/target/codecritic.jar" \
           --repo "$GITHUB_WORKSPACE" \
           --base "$INPUT_BASE" \
           --head "$INPUT_HEAD" \

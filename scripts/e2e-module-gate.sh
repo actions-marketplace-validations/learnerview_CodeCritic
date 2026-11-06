@@ -2,11 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-JAR="${CODECRITIC_JAR:-$ROOT/verification/target/codecritic-verification.jar}"
+JAR="${CODECRITIC_JAR:-$ROOT/target/codecritic.jar}"
 
 if [ ! -f "$JAR" ]; then
-  echo "Missing verification jar: $JAR" >&2
-  echo "Run: mvn -B -pl verification -am package -DskipTests" >&2
+  echo "Missing CodeCritic jar: $JAR" >&2
+  echo "Run: mvn -B package -DskipTests" >&2
   exit 2
 fi
 

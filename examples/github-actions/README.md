@@ -47,8 +47,8 @@ can upload it with `actions/upload-artifact`.
   a pre-warmed image when possible.
 - Fork pull requests do not receive repository secrets by default. This action
   does not need secrets; it only needs the checked-out repository and Docker.
-- The report is evidence, not a proof of correctness. Keep the deterministic
-  gate as the merge authority and the LLM review as advisory.
+- The report is evidence, not a proof of correctness. Keep the gate as the
+  merge authority and review the evidence before overriding it.
 
 ## Validate the action locally
 
@@ -57,7 +57,7 @@ that only breaks an `app` test, and asserts that the gate selects `app,lib` and
 exits `1`:
 
 ```bash
-mvn -B -pl verification -am package -DskipTests
+mvn -B package -DskipTests
 CODECRITIC_SANDBOX_NETWORK=bridge bash scripts/e2e-module-gate.sh
 ```
 
