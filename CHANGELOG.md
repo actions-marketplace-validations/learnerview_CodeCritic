@@ -2,7 +2,7 @@
 
 ## 0.1.0
 
-Current source line. No tagged release has been published yet.
+Initial tagged release.
 
 - Java callable diff with caller, affected-test, complexity, and risk evidence.
 - Maven and Gradle module discovery with reverse-dependency expansion.

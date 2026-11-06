@@ -96,7 +96,7 @@ enough history to resolve the base commit:
 - uses: actions/checkout@v4
   with:
     fetch-depth: 0
-- uses: learnerview/CodeCritic@main
+- uses: learnerview/CodeCritic@0.1.0
   with:
     base: ${{ github.event.pull_request.base.sha }}
     head: ${{ github.event.pull_request.head.sha }}
