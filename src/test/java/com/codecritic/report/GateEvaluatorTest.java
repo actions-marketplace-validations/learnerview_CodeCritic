@@ -64,6 +64,41 @@ class GateEvaluatorTest {
         assertThat(GateEvaluator.evaluate(highRisk, GatePolicy.NEVER).failed()).isFalse();
     }
 
+    @Test
+    void highRiskDoesNotPassHeadTestFailures() {
+        GateDecision decision = GateEvaluator.evaluate(
+                report(RiskBand.LOW, result(ExecutionStatus.SUCCESS), result(ExecutionStatus.TEST_FAILURES, failure("NewTest"))),
+                GatePolicy.HIGH_RISK);
+
+        assertThat(decision.failed()).isTrue();
+        assertThat(decision.reason()).contains("test failures");
+    }
+
+    @Test
+    void newFailureFailsClosedWithoutABaseResult() {
+        GateDecision decision = GateEvaluator.evaluate(
+                report(RiskBand.LOW, null, result(ExecutionStatus.TEST_FAILURES, failure("NewTest"))),
+                GatePolicy.NEW_FAILURE);
+
+        assertThat(decision.failed()).isTrue();
+        assertThat(decision.reason()).contains("without a base result");
+    }
+
+    @Test
+    void newFailureFailsClosedWhenHeadFailuresHaveNoIdentity() {
+        TestSuiteResult head = TestSuiteResult.builder(
+                        "HEAD", "maven", "mvn test", ExecutionStatus.TEST_FAILURES)
+                .counts(1, 1, 0, 0)
+                .build();
+
+        GateDecision decision = GateEvaluator.evaluate(
+                report(RiskBand.LOW, result(ExecutionStatus.SUCCESS), head),
+                GatePolicy.NEW_FAILURE);
+
+        assertThat(decision.failed()).isTrue();
+        assertThat(decision.reason()).contains("without identifiable failed tests");
+    }
+
     private static VerificationReport report(
             RiskBand band,
             TestSuiteResult base,

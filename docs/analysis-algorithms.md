@@ -156,25 +156,27 @@ claiming a behavior change.
 - setup warnings and parse warnings.
 
 `JsonReportRenderer` emits the full model for CI or downstream tooling.
-`HtmlReportRenderer` renders the same evidence inline. The verification path is
-fully deterministic, and reports are advisory review artifacts, not a correctness
-proof.
+`HtmlReportRenderer` renders the same evidence inline. The static analysis path is
+deterministic for a fixed repository and ref pair; test execution depends on the
+target project and its environment. Reports are advisory review artifacts, not a
+correctness proof.
 
 ## 7. Gate decisions and exit codes
 
-`GateEvaluator` runs after the report is built, so the artifact is always written
-before the process exits. `--fail-on` selects the policy:
+`GateEvaluator` runs after the report is built, so a successful report write
+happens before the gate decision is applied. A report-write failure exits `2`
+without a gate verdict. `--fail-on` selects the policy:
 
 | Policy | Fails when | Passes when |
 |---|---|---|
-| `new-failure` (default) | head has a failure absent from base, or head has failures with no comparable baseline | no new failures |
+| `new-failure` (default) | head has a failure absent from base, or head failures cannot be compared with a base result | no new failures |
 | `any-failure` | head has any test failure | head tests pass |
-| `high-risk` | risk band is `HIGH` after health checks | risk is `LOW`/`MEDIUM` |
+| `high-risk` | head has test failures, or risk band is `HIGH` | head tests pass and risk is `LOW`/`MEDIUM` |
 | `never` | never | always |
 
-Before applying the policy, any setup error, missing head result, `UNSUPPORTED`
-project, compile failure, build failure, timeout, or execution error fails the
-gate. `high-risk` does not hide a broken test run. Exit codes are:
+For enabled policies, any setup error, missing head result, `UNSUPPORTED` project,
+compile failure, build failure, timeout, or execution error fails the gate.
+`high-risk` evaluates head test health before the risk band. Exit codes are:
 
 - `0`: report written; gate passed or was disabled.
 - `1`: gate failed.

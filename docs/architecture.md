@@ -5,7 +5,7 @@ two Git refs:
 
 1. Which callables changed?
 2. Which callers, tests, and modules are likely affected?
-3. Do the affected tests prove a behavioral difference?
+3. Do the affected tests show a behavioral difference?
 
 The CLI can stop after impact analysis or run the project's test suites in
 isolated Docker sandboxes and apply a gate policy.
@@ -70,7 +70,8 @@ Selection falls back to the full suite when:
 - a root module depends on the selection
 - the graph cannot be built confidently
 
-The fallback is deliberate: under-selection is worse than a slow run.
+The fallback is deliberate: under-selection can hide a regression, so the tool
+trades speed for coverage when the graph or mapping is uncertain.
 
 ## Differential execution
 
@@ -88,7 +89,7 @@ command and parses Surefire or Gradle XML results.
 - captured stdout/stderr with a byte cap
 - a hard process timeout
 
-Docker is a hard boundary. There is no host fallback.
+Docker is the only test-execution path. There is no host fallback.
 
 `TestRunClassifier` and `FailureComparison` compare failed-test identities. This
 distinguishes a new regression from a suite that was already failing before the
@@ -100,9 +101,9 @@ change.
 
 | Policy | Fails when |
 |---|---|
-| `new-failure` | head has a failure that base did not have |
+| `new-failure` | head has a failure that base did not have, or head failures cannot be compared with a base result |
 | `any-failure` | head has any test failure |
-| `high-risk` | risk band is `HIGH` and the head test result is healthy |
+| `high-risk` | head has test failures, or risk band is `HIGH` |
 | `never` | never |
 
 The report is written before the exit code is applied. A gate failure returns
@@ -112,8 +113,8 @@ errors return `2`.
 ## Reports
 
 `VerificationReportBuilder` records changed files, method impacts, risk,
-warnings, and an evidence ledger. Every claim carries an evidence id so a
-reviewer can trace it to a file, line, or test result.
+warnings, and an evidence ledger. Recorded findings carry an evidence id so a
+reviewer can trace them to a file, line, or test result.
 
 - JSON is machine-readable.
 - HTML is a self-contained reviewer view.
@@ -144,6 +145,6 @@ scripts/
 - Missing Docker, missing build tooling, compile failures, and test timeouts are
   recorded as test setup or execution failures.
 - A broken head test result fails the gate even under `new-failure`, because the
-  tool cannot prove the absence of a regression.
-- Module selection never silently narrows to an unsafe subset; uncertain input
-  falls back to the full suite.
+  tool cannot establish a usable baseline comparison.
+- Module selection is conservative: when the graph or mapping is uncertain, it
+  falls back to the full suite, and the fallback reason is recorded in the report.

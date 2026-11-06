@@ -58,7 +58,7 @@ public final class VerificationService {
     }
 
     /**
-     * Creates a service wired with the production implementations.
+     * Creates a service wired with the default implementations.
      *
      * @return a fully configured verification service
      */

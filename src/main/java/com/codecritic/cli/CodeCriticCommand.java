@@ -106,19 +106,21 @@ public final class CodeCriticCommand implements Callable<Integer> {
             description = "Maximum captured bytes per test process stream. Default: ${DEFAULT-VALUE}.")
     private int maxOutputBytes;
 
-    private final VerificationService service;
+    private final VerificationService serviceOverride;
     private final HtmlReportRenderer htmlRenderer = new HtmlReportRenderer();
     private final JsonReportRenderer jsonRenderer = new JsonReportRenderer();
 
     /**
-     * Creates the command with the default verification service.
+     * Creates the command. The default verification service is created when the
+     * command runs so configuration errors are reported as exit code {@code 2}
+     * instead of escaping argument parsing.
      */
     public CodeCriticCommand() {
-        this(VerificationService.createDefault());
+        this(null);
     }
 
     CodeCriticCommand(VerificationService service) {
-        this.service = service;
+        this.serviceOverride = service;
     }
 
     /**
@@ -134,6 +136,9 @@ public final class CodeCriticCommand implements Callable<Integer> {
             ExecutionOptions executionOptions = executionOptions(candidate != null);
             TestSelectionMode selectionMode = selectionMode();
             GatePolicy gatePolicy = gatePolicy();
+            VerificationService service = serviceOverride != null
+                    ? serviceOverride
+                    : VerificationService.createDefault();
             VerificationReport report = service.verify(
                     repository,
                     base,

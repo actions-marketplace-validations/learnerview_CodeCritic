@@ -12,7 +12,7 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
- * {@link CommandRunner} that executes build commands inside a hardened Docker
+ * {@link CommandRunner} that executes build commands inside a restricted Docker
  * container.
  *
  * <p>The worktree is bind-mounted at {@code /workspace}, networking is disabled

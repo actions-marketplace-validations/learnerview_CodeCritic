@@ -120,8 +120,8 @@ public final class HtmlReportRenderer {
 
         html.append("<header class=\"hero\">");
         html.append("<div class=\"eyebrow\">CodeCritic / change impact</div>");
-        html.append("<h1>Prove the change.</h1>");
-        html.append("<p class=\"subtitle\">Deterministic callable-level impact map for <code>")
+        html.append("<h1>Change evidence.</h1>");
+        html.append("<p class=\"subtitle\">Callable-level impact map for <code>")
                 .append(esc(report.baseRef()))
                 .append("</code> to <code>")
                 .append(esc(report.headRef()))
@@ -143,7 +143,7 @@ public final class HtmlReportRenderer {
         html.append("""
                 <section class="panel note">
                   <h2>Scope</h2>
-                  <p>This report is a deterministic change-impact layer. When tests are enabled, it runs each revision's existing suite inside Docker. When a candidate test is supplied, it injects that test into both revisions and classifies the result as F2P, P2F, P2P, or F2F. It does not claim that the change is correct.</p>
+                  <p>This report records the static change impact and any observed test results. When tests are enabled, it runs each revision's existing suite inside Docker. When a candidate test is supplied, it injects that test into both revisions and classifies the result as F2P, P2F, P2P, or F2F. It does not claim that the change is correct.</p>
                 </section>
                 <footer>CodeCritic impact map. Caller counts are name-based heuristics, not symbol-resolved reachability.</footer>
                 </main>

@@ -15,8 +15,8 @@ gate.
   Tests that exercise behavior indirectly, through helpers or integration
   boundaries, may be missed.
 - **Only `.java` changes are analyzed for impact.** Non-Java changed paths are
-  still collected; build-file changes force the safe full-suite fallback, and
-  other paths can select their containing module, but no callable-level impact is
+  still collected; build-file changes force the full-suite fallback, and other
+  paths can select their containing module, but no callable-level impact is
   inferred from them.
 - **Risk scoring is a heuristic.** A `HIGH` band means the change deserves
   attention, not that it is defective.
@@ -31,7 +31,7 @@ gate.
   references in module build files. Dynamic dependencies, generated builds,
   unresolved property expressions, non-standard layouts, and composite builds may
   be missed. Use `--select all` when the graph is uncertain.
-- **Selection prefers safety over speed.** It falls back to the full suite for
+- **Selection prefers coverage over speed.** It falls back to the full suite for
   build-file changes, root-level changes, single-module projects, unmapped
   changes, missing modules, and dependent root modules. A fallback is not a
   failure, but it means the module-aware saving is zero for that run.
@@ -44,13 +44,29 @@ gate.
 - **Bridge networking is a security trade-off.** Build scripts are executable
   untrusted input, so bridge mode permits outbound traffic from those scripts.
   Prefer a dependency cache or a pre-warmed image.
+- **Docker Desktop on Windows requires shared drives.** A bind mount from a drive
+  that Docker Desktop does not share will fail; keep the repository on a shared
+  drive or adjust Docker Desktop file sharing.
+- **Tool images are fixed defaults.** Maven and Gradle images can be overridden
+  with `CODECRITIC_MAVEN_IMAGE` and `CODECRITIC_GRADLE_IMAGE` when a project needs
+  a different JDK or build-tool version.
 - **One candidate test per run.** Candidate mode injects a single Java test and
   compares its verdict across revisions.
 - **Stability checks are bounded.** `F2P` and `P2F` results are repeated once by
   default. A different repeat verdict becomes `FLAKY`, but repeated runs cannot
   prove the absence of flakiness.
-- **Test discovery depends on XML output.** A project that runs tests but does
-  not produce Surefire/Gradle XML is classified as having no usable results.
+- **Test discovery depends on XML output.** Counts and failed-test identities come
+  from Surefire/Gradle XML. Without XML, a failure may be classified only from
+  build output, and a successful build can produce no test evidence.
+- **Zero test evidence can still pass.** If a successful build emits no test XML
+  or reports zero tests, the result includes a warning but the gate may pass. Add
+  a separate CI check when a repository must run at least one test.
+- **Submodules and Git LFS are not explicitly prepared.** CodeCritic does not run
+  `git submodule update` or `git lfs pull`; builds that need either may fail or
+  behave differently depending on the host setup.
+- **The head Java tree is loaded into memory.** The full head source set is read
+  for indexing; very large monorepos may need a larger JVM heap and enough free
+  disk for worktrees and build output.
 
 ## Gate behavior
 
@@ -59,7 +75,10 @@ gate.
   across historical CI runs.
 - **A broken head run fails the gate.** Missing head results, compile failures,
   build failures, timeouts, unsupported projects, and execution errors fail even
-  under `new-failure`, because the tool cannot prove the absence of a regression.
+  under `new-failure`, because the tool cannot establish a usable comparison.
+- **Uncomparable head failures fail closed.** If head reports test failures but
+  the base result or failed-test identities are missing, `new-failure` fails
+  rather than treating the failures as pre-existing.
 - **Reports are advisory.** A green run does not prove correctness; it records
   the evidence the tool could collect.
 - **No automatic test discovery from the change.** CodeCritic runs existing

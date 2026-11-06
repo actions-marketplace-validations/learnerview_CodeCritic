@@ -2,7 +2,7 @@ name: CodeCritic Merge Gate
 description: Run module-aware differential tests and fail on new regressions.
 author: CodeCritic
 branding:
-  icon: shield
+  icon: git-pull-request
   color: blue
 
 inputs:
@@ -26,9 +26,9 @@ inputs:
     required: false
     default: json
   output:
-    description: Report path, relative to the consumer workspace unless absolute.
+    description: Report path, relative to the consumer workspace unless absolute. Defaults to codecritic-report.<format>.
     required: false
-    default: codecritic-report.json
+    default: ''
   sandbox-network:
     description: Docker sandbox network. Use bridge only when Maven/Gradle must download dependencies.
     required: false
@@ -58,6 +58,9 @@ runs:
       shell: bash
       run: |
         output="${{ inputs.output }}"
+        if [ -z "$output" ]; then
+          output="codecritic-report.${{ inputs.format }}"
+        fi
         case "$output" in
           /*) ;;
           *) output="$GITHUB_WORKSPACE/$output" ;;
@@ -68,11 +71,13 @@ runs:
       with:
         distribution: temurin
         java-version: ${{ inputs['java-version'] }}
+        cache: maven
+        cache-dependency-path: ${{ github.action_path }}/pom.xml
 
     - name: Build CodeCritic CLI
       shell: bash
       working-directory: ${{ github.action_path }}
-      run: mvn -B package -DskipTests
+      run: mvn -B -ntp package -DskipTests
 
     - name: Run merge gate
       id: gate

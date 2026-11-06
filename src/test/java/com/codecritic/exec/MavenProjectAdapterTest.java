@@ -31,6 +31,7 @@ class MavenProjectAdapterTest {
         assertThat(result.status()).isEqualTo(ExecutionStatus.SUCCESS);
         assertThat(result.adapter()).isEqualTo("maven");
         assertThat(result.testsRun()).isZero();
+        assertThat(result.warnings()).anyMatch(warning -> warning.contains("No tests were observed"));
         assertThat(captured.get()).contains("test");
         assertThat(String.join(" ", captured.get())).contains("-B");
         assertThat(result.command()).contains("mvn").doesNotStartWith("cmd.exe");

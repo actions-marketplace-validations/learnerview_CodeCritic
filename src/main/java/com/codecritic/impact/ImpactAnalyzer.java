@@ -9,7 +9,7 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * Computes a deterministic change-impact and risk assessment for Java callables.
+ * Computes a change-impact and risk assessment for Java callables.
  *
  * <p>The score combines change kind, public API exposure, complexity movement,
  * heuristic caller counts, and affected-test availability. Scores are capped at

@@ -16,6 +16,7 @@ jobs:
 
       - name: Run CodeCritic
         id: codecritic
+        # Pin to a release tag or commit SHA in a real workflow.
         uses: learnerview/CodeCritic@main
         with:
           base: ${{ github.event.pull_request.base.sha }}

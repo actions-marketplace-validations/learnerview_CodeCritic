@@ -31,7 +31,7 @@ class CodeCriticCommandTest {
         assertThat(Files.exists(report)).isTrue();
 
         String html = Files.readString(report, StandardCharsets.UTF_8);
-        assertThat(html).contains("Prove the change.");
+        assertThat(html).contains("Change evidence.");
         assertThat(html).contains("Evidence ledger");
         assertThat(html).contains("com.example.Calculator#add");
         assertThat(html).contains("E01");

@@ -198,9 +198,6 @@ public abstract class AbstractProjectAdapter implements ProjectAdapter {
         boolean reportTruncated = combinedOutput.length() > OUTPUT_TAIL_CHARS;
 
         List<String> warnings = new ArrayList<>(parsed.warnings());
-        if (!"host".equals(commandRunner.environment())) {
-            warnings.add("Executed inside the Docker sandbox.");
-        }
         if (process.stdoutTruncated() || process.stderrTruncated()) {
             warnings.add("Test process output exceeded the capture limit and was truncated.");
         }
@@ -213,6 +210,9 @@ public abstract class AbstractProjectAdapter implements ProjectAdapter {
         if (parsed.suiteFiles() == 0
                 && (status == ExecutionStatus.TEST_FAILURES || status == ExecutionStatus.BUILD_FAILURE)) {
             warnings.add("No test result XML was found; status was classified from build output.");
+        }
+        if (parsed.testsRun() == 0 && status == ExecutionStatus.SUCCESS) {
+            warnings.add("No tests were observed; the run produced no test evidence.");
         }
 
         return TestSuiteResult.builder(revision, name(), displayCommand, status)

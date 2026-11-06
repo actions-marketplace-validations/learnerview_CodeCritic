@@ -3,6 +3,7 @@ package com.codecritic.exec;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * Detects the build tool used by a worktree and creates the matching
@@ -10,14 +11,15 @@ import java.util.Optional;
  */
 public final class ProjectAdapterFactory {
 
-    private final CommandRunner commandRunner;
+    private final Supplier<CommandRunner> commandRunner;
     private final TestResultXmlParser resultParser;
 
     /**
-     * Creates a factory that runs builds in the Docker sandbox.
+     * Creates a factory that runs builds in the Docker sandbox. The sandbox is
+     * created only when a supported project is detected.
      */
     public ProjectAdapterFactory() {
-        this(new DockerSandboxRunner(), new TestResultXmlParser());
+        this(() -> new DockerSandboxRunner(), new TestResultXmlParser());
     }
 
     /**
@@ -27,6 +29,12 @@ public final class ProjectAdapterFactory {
      * @param resultParser parser used by the created adapters
      */
     public ProjectAdapterFactory(CommandRunner commandRunner, TestResultXmlParser resultParser) {
+        this(() -> commandRunner, resultParser);
+    }
+
+    private ProjectAdapterFactory(
+            Supplier<CommandRunner> commandRunner,
+            TestResultXmlParser resultParser) {
         this.commandRunner = commandRunner;
         this.resultParser = resultParser;
     }
@@ -43,11 +51,11 @@ public final class ProjectAdapterFactory {
      */
     public Optional<ProjectAdapter> detect(Path worktree) {
         if (Files.isRegularFile(worktree.resolve("pom.xml"))) {
-            return Optional.of(new MavenProjectAdapter(commandRunner, resultParser));
+            return Optional.of(new MavenProjectAdapter(commandRunner.get(), resultParser));
         }
         if (Files.isRegularFile(worktree.resolve("build.gradle"))
                 || Files.isRegularFile(worktree.resolve("build.gradle.kts"))) {
-            return Optional.of(new GradleProjectAdapter(commandRunner, resultParser));
+            return Optional.of(new GradleProjectAdapter(commandRunner.get(), resultParser));
         }
         return Optional.empty();
     }

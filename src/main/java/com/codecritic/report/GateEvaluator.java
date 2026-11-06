@@ -21,8 +21,8 @@ public final class GateEvaluator {
      * <p>
      * A {@code null} policy is treated as {@link GatePolicy#NEVER}. Setup
      * failures, missing head results, unsupported projects, unusable head
-     * results, new or any test failures, and high risk are considered according
-     * to the selected policy.
+     * results, head test failures, failures without a usable comparison, and
+     * high risk are considered according to the selected policy.
      *
      * @param report the verification report to evaluate
      * @param policy the gate policy, or {@code null} to disable the gate
@@ -58,7 +58,12 @@ public final class GateEvaluator {
             return GateDecision.fail("head did not produce a usable test result: " + head.status());
         }
 
+        boolean headFailed = hasHeadFailures(head);
+
         if (policy == GatePolicy.HIGH_RISK) {
+            if (headFailed) {
+                return GateDecision.fail("head has test failures");
+            }
             return riskDecision(report);
         }
 
@@ -68,16 +73,31 @@ public final class GateEvaluator {
                 TestFailure first = comparison.newFailures().get(0);
                 return GateDecision.fail("new test failure: " + first.id());
             }
-            if (head.status() == ExecutionStatus.TEST_FAILURES && comparison == null) {
-                return GateDecision.fail("head reported test failures without a comparable baseline");
+            if (headFailed) {
+                if (baseline.base() == null) {
+                    return GateDecision.fail(
+                            "head reported test failures without a base result");
+                }
+                if (head.failedTests().isEmpty()) {
+                    return GateDecision.fail(
+                            "head reported test failures without identifiable failed tests");
+                }
+                if (comparison == null) {
+                    return GateDecision.fail(
+                            "head reported test failures without a comparable baseline");
+                }
             }
             return GateDecision.pass("no new test failures");
         }
 
-        if (head.status() == ExecutionStatus.TEST_FAILURES || head.hasTestFailures()) {
+        if (headFailed) {
             return GateDecision.fail("head has test failures");
         }
         return GateDecision.pass("head tests passed");
+    }
+
+    private static boolean hasHeadFailures(TestSuiteResult head) {
+        return head.status() == ExecutionStatus.TEST_FAILURES || head.hasTestFailures();
     }
 
     private static GateDecision riskDecision(VerificationReport report) {

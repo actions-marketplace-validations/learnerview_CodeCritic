@@ -1,6 +1,6 @@
 # CLI Reference
 
-CodeCritic ships as a shaded, executable jar. It never requires MongoDB, Redis,
+CodeCritic ships as a shaded, executable jar. It does not require MongoDB, Redis,
 or Python. Differential test execution requires Docker.
 
 Build it from the repository root:
@@ -86,17 +86,17 @@ the dependency graph uncertain.
 
 | Policy | Fails when |
 |---|---|
-| `new-failure` | head has a failure that base did not have |
+| `new-failure` | head has a failure that base did not have, or head failures cannot be compared with a base result |
 | `any-failure` | head has any test failure |
-| `high-risk` | risk band is `HIGH` and the head test result is healthy |
+| `high-risk` | head has test failures, or risk band is `HIGH` |
 | `never` | never; writes the report and exits `0` |
 
 ## Exit codes
 
 - `0`: report written and the selected gate passed, or gating was disabled.
 - `1`: the gate failed. Depending on `--fail-on`, this means a new test failure,
-  any head test failure, a `HIGH` risk band, or a broken test result
-  (setup/compile/build/timeout/error/unsupported project).
+  any head test failure, an uncomparable head failure, a `HIGH` risk band, or a
+  broken test result (setup/compile/build/timeout/error/unsupported project).
 - `2`: argument, Git, or report-write error.
 
 ## JSON report shape
@@ -133,4 +133,20 @@ read-only root filesystem with a writable `/tmp`, and defaults to
 
 Set `CODECRITIC_SANDBOX_NETWORK=bridge` only when Maven or Gradle must download
 dependencies. Build scripts are executable untrusted input, so bridge mode
-permits outbound traffic from those scripts.
+permits outbound traffic from those scripts. See [../SECURITY.md](../SECURITY.md)
+for the full threat model.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Action |
+|---|---|---|
+| `Cannot connect to the Docker daemon` | Docker is not installed, not running, or not reachable by the current user | Start Docker and confirm `docker info` succeeds |
+| Dependency resolution fails with `--network none` | The build needs remote artifacts | Use a pre-warmed image or dependency cache; only then opt into `CODECRITIC_SANDBOX_NETWORK=bridge` |
+| `base ref` cannot be resolved | Shallow checkout or missing remote history | Fetch the base revision, for example `git fetch --unshallow`, or pass an available SHA |
+| No usable test results | The build did not emit Surefire or Gradle XML | Confirm the test task writes XML results and that tests actually ran |
+| Gate passed with zero tests | No test XML or no tests were observed | Treat the report warning as a gap; add a separate CI check when tests are required |
+| The full suite ran unexpectedly | A build-file, root-level, unmapped, single-module, or missing-module change forced the full-suite fallback | Inspect `baseline.selection` and the report warnings; this is intentional |
+| Exit code `2` | Argument, Git, or report-write failure | Fix the invocation or output path; no gate verdict was produced |
+| Exit code `2` after changing sandbox settings | `CODECRITIC_SANDBOX_NETWORK` is not `none` or `bridge` | Set it to `none` or `bridge`, or unset it for the default |
+| Exit code `1` with healthy tests | A `high-risk` policy matched, or a setup, compile, build, timeout, or unsupported-project error was recorded | Inspect the gate reason, `baseline.setupError`, and the captured output |
+| A report contains machine-specific paths | Reports record the paths the tool observed | Treat reports as internal artifacts and review before sharing |

@@ -16,14 +16,14 @@
 2. Point `base` at the PR base SHA and `head` at the PR head SHA. Do not use a
    shallow checkout with `HEAD~1` on a merge commit.
 
-3. Pin the action to a tag or SHA for production use:
+3. Pin the action to a tag or SHA so consumer workflows are reproducible:
 
    ```yaml
    - uses: learnerview/CodeCritic@<tag-or-sha>
    ```
 
 4. Docker must be available on the runner. GitHub-hosted Ubuntu runners include
-   it. The action never falls back to running tests on the host.
+   it. The action does not fall back to running tests on the host.
 
 ## Inputs that matter
 
@@ -35,7 +35,7 @@
 | `fail-on` | `new-failure`, `any-failure`, `high-risk`, or `never` |
 | `sandbox-network` | `none` by default; set `bridge` when Maven/Gradle must download dependencies |
 | `test-timeout` | Seconds per test process; default `600` |
-| `output` | Report path; defaults to `codecritic-report.json` |
+| `output` | Report path; defaults to `codecritic-report.<format>` |
 
 The `report` output is the absolute path to the generated file, so a later step
 can upload it with `actions/upload-artifact`.
