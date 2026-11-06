@@ -1,15 +1,21 @@
 package com.codecritic.job;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import io.github.learnerview.simplydone4j.dto.JobResponse;
 import io.github.learnerview.simplydone4j.dto.JobSubmissionRequest;
 import io.github.learnerview.simplydone4j.dto.JobSubmissionResponse;
+import io.github.learnerview.simplydone4j.exception.JobNotFoundException;
 import io.github.learnerview.simplydone4j.service.JobSubmissionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.Map;
-import java.util.TreeMap;
+import java.util.Set;
 import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
 
@@ -22,20 +28,68 @@ public class SimplyDoneJobCoordinator implements JobCoordinator {
 
     private static final Logger log = LoggerFactory.getLogger(SimplyDoneJobCoordinator.class);
 
+    /**
+     * Statuses after which the job will never run again. Mirrors the terminal set of the
+     * library's own {@code JobStatus} enum ({@code SUCCESS}, {@code FAILED}, {@code DLQ},
+     * {@code CANCELLED}); {@code QUEUED}, {@code RUNNING} and {@code RETRY_SCHEDULED} are
+     * still in flight.
+     */
+    private static final Set<String> TERMINAL_STATUSES =
+            Set.of("SUCCESS", "FAILED", "DLQ", "CANCELLED");
+
+    /**
+     * Reported to the client in place of a terminal status the client cannot interpret.
+     * {@code DLQ} (retry budget exhausted) and {@code CANCELLED} are terminal, but the
+     * poller only stops on {@code SUCCESS} or {@code FAILED}, so passing them through raw
+     * would leave it spinning until its own retry budget expired — the exact silent stall
+     * this status mapping exists to prevent. Anything starting with {@code FAIL} is also
+     * rendered as an error by the client's status styling.
+     */
+    private static final String TERMINAL_FAILURE_STATUS = "FAILEDWithError";
+
     private final JobSubmissionService jobSubmissionService;
 
+    /**
+     * Used only to produce the canonical payload form hashed into the idempotency key. Map
+     * entries are sorted at every nesting level, so two payloads that differ only in map
+     * insertion order serialize identically, and JSON's quoting/escaping makes the encoding
+     * unambiguous: distinct payloads can no longer fold into the same pre-hash string the way
+     * the old flat {@code key=value} concatenation could (e.g. {@code {a="1b=2"}} vs
+     * {@code {a="1", b="2"}}).
+     */
+    private static final ObjectMapper CANONICAL_MAPPER = JsonMapper.builder()
+            .configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true)
+            .configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true)
+            .build();
+
+    /**
+     * Creates the coordinator backed by the SimplyDone4J submission service.
+     *
+     * @param jobSubmissionService the third-party service used to enqueue and load jobs
+     */
     public SimplyDoneJobCoordinator(JobSubmissionService jobSubmissionService) {
         this.jobSubmissionService = jobSubmissionService;
     }
 
+    /**
+     * Submits a job with a content-derived idempotency key and a producer qualified by job
+     * type.
+     *
+     * @param jobType type of analysis job
+     * @param payload job-specific input values
+     * @param producer identity that owns the submitted job; blank values are mapped to
+     *                 {@code codecritic-anonymous}
+     * @return the submission receipt containing the job identifier and initial status
+     * @throws IllegalStateException if the payload cannot be serialized for the idempotency
+     *                               key
+     */
     @Override
     public JobSubmissionResponse submit(String jobType, Map<String, Object> payload, String producer) {
         log.info("Submitting {} job to SimplyDone4J", jobType);
         String idempotencyKey = sha256Hex(jobType, payload);
-        // Qualify the producer with the job type so SimplyDone4J's per-producer
-        // rate limiter (60 requests/min default) is not shared across unrelated
-        // job types from the same originating identity. Keeping the identity
-        // prefix stable still lets content-based idempotency dedupe retries.
+        // Qualify the producer with the job type so ownership and idempotency stay
+        // scoped to one job type for the same originating identity. Keeping the
+        // identity prefix stable still lets content-based idempotency dedupe retries.
         String qualifiedProducer = producer + "-" + jobType;
         if (producer == null || producer.isBlank()) {
             qualifiedProducer = "codecritic-anonymous" + "-" + jobType;
@@ -47,15 +101,35 @@ public class SimplyDoneJobCoordinator implements JobCoordinator {
         return jobSubmissionService.submit(qualifiedProducer, request);
     }
 
+    /**
+     * Computes the idempotency key for a job from its type and canonical payload form.
+     *
+     * @param jobType type of analysis job
+     * @param payload job-specific input values
+     * @return lowercase hexadecimal SHA-256 digest of the canonical input
+     * @throws IllegalStateException if the payload cannot be serialized or SHA-256 is
+     *                               unavailable
+     */
     static String sha256Hex(String jobType, Map<String, Object> payload) {
-        StringBuilder sb = new StringBuilder();
-        sb.append(jobType);
-        for (Map.Entry<String, Object> entry : new TreeMap<>(payload).entrySet()) {
-            sb.append(entry.getKey()).append("=").append(entry.getValue());
+        String canonical;
+        try {
+            canonical = jobType + "\n" + CANONICAL_MAPPER.writeValueAsString(payload);
+        } catch (JsonProcessingException e) {
+            // A payload that cannot be canonically serialized is a programming error. Falling
+            // back to a lossy key would silently merge distinct jobs, which is exactly the
+            // collision this method exists to prevent, so the submission fails loudly instead.
+            throw new IllegalStateException("Job payload is not JSON-serializable: " + e.getMessage(), e);
         }
-        return computeSha256(sb.toString());
+        return computeSha256(canonical);
     }
 
+    /**
+     * Computes the lowercase hexadecimal SHA-256 digest of a UTF-8 string.
+     *
+     * @param input text to hash
+     * @return hexadecimal digest
+     * @throws IllegalStateException if the SHA-256 algorithm is unavailable
+     */
     private static String computeSha256(String input) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
@@ -66,23 +140,83 @@ public class SimplyDoneJobCoordinator implements JobCoordinator {
             }
             return hexBuilder.toString();
         } catch (Exception e) {
-            log.warn("SHA-256 computation failed, using deterministic fallback key: {}", e.getMessage());
-            return "codecritic-fallback-" + input.hashCode();
+            // SHA-256 is mandated by every JRE; reaching here means the runtime is broken,
+            // not that the payload is at fault. Propagating rather than substituting a weak
+            // key keeps the no-collision contract of this method intact.
+            throw new IllegalStateException("SHA-256 is unavailable on this JVM", e);
         }
     }
 
+    /**
+     * Look up a job. Returns the {@link JobResponse} for <em>every</em> job that exists,
+     * whatever its status, and {@code null} only when the job genuinely does not exist.
+     *
+     * <p>Collapsing a non-terminal or terminal-failure status to {@code null} made a failed
+     * job indistinguishable from one that was still queued, so the caller could only ever
+     * answer 404 and the poller could not distinguish "keep waiting" from "give up".</p>
+     *
+     * @param jobId identifier of the job to retrieve
+     * @return the job's current state, or {@code null} if no such job exists
+     */
     @Override
     public Object getJobResult(String jobId) {
-        log.info("Retrieving result for job {}", jobId);
+        JobResponse response;
         try {
-            JobResponse response = jobSubmissionService.getJob(jobId);
-            if ("SUCCESS".equals(response.getStatus()) && response.getResult() != null) {
-                return response;
-            }
-            return null;
-        } catch (Exception e) {
-            log.warn("Failed to retrieve job {} result: {}", jobId, e.getMessage());
+            response = jobSubmissionService.getJob(jobId);
+        } catch (JobNotFoundException e) {
+            // The library implements getJob as findById(id).orElseThrow(() -> new
+            // JobNotFoundException(id)), so an unknown id surfaces as this exception rather
+            // than as a null. That makes it the only condition that justifies a 404. Any
+            // other exception leaving getJob — a Redis outage, a command timeout, a
+            // deserialization fault — is an infrastructure failure and is deliberately left
+            // to propagate so the caller answers 5xx instead of claiming the job is unknown.
+            log.info("Job {} not found", jobId);
             return null;
         }
+        if (response == null) {
+            return null;
+        }
+        if (TERMINAL_STATUSES.contains(response.getStatus())) {
+            return withClientVisibleStatus(response);
+        }
+        return response;
+    }
+
+    /**
+     * JobResponse is immutable (all fields final, no setters), so a terminal status the
+     * client cannot act on is rewritten by rebuilding it field for field — everything the
+     * caller already receives for a successful job stays byte-identical apart from status.
+     *
+     * @param response the job response with a terminal status
+     * @return the same response when the status is {@code SUCCESS} or {@code FAILED},
+     *         otherwise a rebuilt response reporting {@link #TERMINAL_FAILURE_STATUS}
+     */
+    private JobResponse withClientVisibleStatus(JobResponse response) {
+        String status = response.getStatus();
+        if ("SUCCESS".equals(status) || "FAILED".equals(status)) {
+            return response;
+        }
+        log.info("Job {} finished in terminal status {}; reporting as {}", response.getId(), status,
+                TERMINAL_FAILURE_STATUS);
+        return JobResponse.builder()
+                .id(response.getId())
+                .jobType(response.getJobType())
+                .producer(response.getProducer())
+                .idempotencyKey(response.getIdempotencyKey())
+                .status(TERMINAL_FAILURE_STATUS)
+                .priority(response.getPriority())
+                .payload(response.getPayload())
+                .result(response.getResult())
+                .nextRunAt(response.getNextRunAt())
+                .visibleAt(response.getVisibleAt())
+                .leaseOwner(response.getLeaseOwner())
+                .timeoutSeconds(response.getTimeoutSeconds())
+                .startedAt(response.getStartedAt())
+                .completedAt(response.getCompletedAt())
+                .attemptCount(response.getAttemptCount())
+                .maxAttempts(response.getMaxAttempts())
+                .createdAt(response.getCreatedAt())
+                .updatedAt(response.getUpdatedAt())
+                .build();
     }
 }

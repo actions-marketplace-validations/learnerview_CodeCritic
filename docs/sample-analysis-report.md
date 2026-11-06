@@ -6,8 +6,20 @@ the Java analysis service (complexity, bug findings) and aggregated locally in
 the Python agent. Only the final summary section involves an LLM, and it is
 grounded in the metrics rather than left to invent observations.
 
+This sample is for the web repository-analysis route. The separate verification
+CLI (`verification/target/codecritic-verification.jar`) emits a different report:
+changed callables, caller/test impact, risk evidence, and optional differential
+test results. See [docs/api.md](api.md#verification-cli) and
+[docs/analysis-algorithms.md](analysis-algorithms.md#4-callable-level-change-detection-verification).
+
 The run was performed against a public GitHub repository
 (`learnerview/simplydone`, branch `main`, 8 files inspected).
+
+> **Provenance & safety:** this example uses a public open-source repository and
+> contains only aggregate metrics plus an AI summary — **no secrets, credentials,
+> personal data, or private source**. Reproduce it with any public repo; numbers
+> vary run to run. The analysis is illustrative and the AI summary is advisory
+> (see the "AI-output grounding" section in the root `README.md`).
 
 ---
 
@@ -73,4 +85,5 @@ queue-based coordinator, and access control is handled at the controller layer.
 
 *Metrics vary run to run; this document shows the format. To reproduce:
 `curl -X POST http://localhost:8000/analyze-repository -H "Content-Type:
-application/json" -d '{"repoUrl":"https://github.com/learnerview/simplydone","maxFiles":8}'`*
+application/json" -H "X-CodeCritic-Agent-Token: $PYTHON_AGENT_TOKEN" -d
+'{"repoUrl":"https://github.com/learnerview/simplydone","maxFiles":8}'`*

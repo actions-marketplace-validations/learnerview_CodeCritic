@@ -18,10 +18,23 @@ public class CompositeBugDetector implements BugDetector {
 
     private final List<BugDetector> detectors;
 
+    /**
+     * Creates a detector that runs the pattern detector before the cached
+     * SpotBugs detector.
+     *
+     * @param patternBugDetector fast deterministic pattern detector
+     * @param spotBugsBugDetector cached SpotBugs detector
+     */
     public CompositeBugDetector(PatternBugDetector patternBugDetector, CachedSpotBugsBugDetector spotBugsBugDetector) {
         this.detectors = List.of(patternBugDetector, spotBugsBugDetector);
     }
 
+    /**
+     * Runs every composed detector and concatenates their findings.
+     *
+     * @param code source code to analyze
+     * @return combined findings from all detectors, in detector order
+     */
     @Override
     public List<BugFinding> detect(String code) {
         List<BugFinding> all = new ArrayList<>();

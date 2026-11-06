@@ -31,10 +31,28 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final JwtTokenProvider tokenProvider;
 
+    /**
+     * Creates the filter.
+     *
+     * @param tokenProvider provider used to validate tokens and extract usernames
+     */
     public JwtAuthFilter(JwtTokenProvider tokenProvider) {
         this.tokenProvider = tokenProvider;
     }
 
+    /**
+     * Authenticates the request when it carries a valid Bearer token.
+     *
+     * <p>Invalid or missing tokens are left unauthenticated; rejection, if any,
+     * is handled later by the security filter chain. The filter never fails the
+     * request just because a token cannot be parsed.</p>
+     *
+     * @param request incoming HTTP request
+     * @param response outgoing HTTP response
+     * @param filterChain remaining filter chain
+     * @throws ServletException if a downstream filter raises a servlet error
+     * @throws IOException if reading or writing the request fails
+     */
     @Override
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
@@ -48,7 +66,9 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
                 SecurityContextHolder.getContext().setAuthentication(authentication);
             } catch (Exception e) {
-                log.warn("JWT authentication failed, leaving context unauthenticated", e);
+                // Invalid tokens are routine (expired sessions, scanners). A warning plus a
+                // stack trace here lets an unauthenticated client flood the logs.
+                log.debug("JWT authentication failed, leaving context unauthenticated: {}", e.getMessage());
             }
         }
         filterChain.doFilter(request, response);

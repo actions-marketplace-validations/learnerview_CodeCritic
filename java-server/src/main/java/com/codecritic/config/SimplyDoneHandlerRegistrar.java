@@ -13,9 +13,10 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
+import java.util.Set;
 
 /**
- * Registers the SimplyDone4J {@link JobHandler}s with the library's
+ * Registers the SimplyDone4J {@code JobHandler}s with the library's
  * {@link HandlerRegistry}, routing each job type to the matching
  * {@link AnalysisService} method via the {@link JobContext} payload.
  */
@@ -23,9 +24,22 @@ import java.util.Map;
 @ConditionalOnProperty(prefix = "simplydone4j", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class SimplyDoneHandlerRegistrar implements ApplicationRunner {
 
-    static final String COMPLEXITY_JOB = "complexity-analysis";
-    static final String BUGS_JOB = "bug-detection";
-    static final String TESTS_JOB = "test-generation";
+    /**
+     * Single source of truth for the job-type identifiers. The submit endpoints, the handler
+     * registrations and the synchronous fallback in {@code ResilientJobCoordinator} all key
+     * off these strings, so they are public for that reason: a second copy of the literals
+     * can only ever drift from this one and silently stop matching a registered handler.
+     */
+    public static final String COMPLEXITY_JOB = "complexity-analysis";
+
+    /** Job type identifier for bug detection. */
+    public static final String BUGS_JOB = "bug-detection";
+
+    /** Job type identifier for JUnit test scaffold generation. */
+    public static final String TESTS_JOB = "test-generation";
+
+    /** Every job type this application knows how to run. */
+    public static final Set<String> JOB_TYPES = Set.of(COMPLEXITY_JOB, BUGS_JOB, TESTS_JOB);
 
     private static final Logger log = LoggerFactory.getLogger(SimplyDoneHandlerRegistrar.class);
 
@@ -33,6 +47,13 @@ public class SimplyDoneHandlerRegistrar implements ApplicationRunner {
     private final AnalysisService analysisService;
     private final ObjectMapper objectMapper;
 
+    /**
+     * Creates the registrar.
+     *
+     * @param handlerRegistry registry to which the job handlers are registered
+     * @param analysisService service that performs the actual analysis work
+     * @param objectMapper mapper used to read job payloads and serialize results
+     */
     public SimplyDoneHandlerRegistrar(HandlerRegistry handlerRegistry,
                                       AnalysisService analysisService,
                                       ObjectMapper objectMapper) {
@@ -41,6 +62,11 @@ public class SimplyDoneHandlerRegistrar implements ApplicationRunner {
         this.objectMapper = objectMapper;
     }
 
+    /**
+     * Registers a handler for every supported job type.
+     *
+     * @param args application arguments supplied by Spring Boot; unused
+     */
     @Override
     public void run(ApplicationArguments args) {
         register(COMPLEXITY_JOB, this::handleComplexity);

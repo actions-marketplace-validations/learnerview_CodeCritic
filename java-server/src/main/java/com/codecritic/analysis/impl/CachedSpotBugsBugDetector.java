@@ -37,10 +37,22 @@ public class CachedSpotBugsBugDetector implements BugDetector {
     private final AtomicLong hits = new AtomicLong();
     private final AtomicLong misses = new AtomicLong();
 
+    /**
+     * Creates a detector that caches results from the supplied delegate.
+     *
+     * @param delegate underlying SpotBugs detector whose runs are cached
+     * @param metrics metrics sink notified for each actual SpotBugs execution
+     */
     public CachedSpotBugsBugDetector(SpotBugsBugDetector delegate, AnalysisMetrics metrics) {
         this.delegate = delegate;
         this.metrics = metrics;
         this.cache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
+            /**
+             * Evicts the least-recently-used entry once the cache exceeds its bound.
+             *
+             * @param eldest least-recently-used entry
+             * @return {@code true} when the entry should be removed
+             */
             @Override
             protected boolean removeEldestEntry(Map.Entry<String, List<BugFinding>> eldest) {
                 return size() > MAX_ENTRIES;
@@ -48,6 +60,18 @@ public class CachedSpotBugsBugDetector implements BugDetector {
         });
     }
 
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<List<BugFinding>>> inFlight = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Detects bugs, replaying a cached result for previously analyzed source.
+     *
+     * <p>Concurrent requests for the same source share a single underlying
+     * execution; only the first caller runs SpotBugs while the others wait for
+     * its result.</p>
+     *
+     * @param code source code to analyze
+     * @return findings from the cache or the underlying detector
+     */
     @Override
     public List<BugFinding> detect(String code) {
         String key = cacheKey(code);
@@ -59,30 +83,69 @@ public class CachedSpotBugsBugDetector implements BugDetector {
             }
         }
         misses.incrementAndGet();
-        long started = System.nanoTime();
-        List<BugFinding> findings = delegate.detect(code);
-        metrics.recordSpotBugsRun((System.nanoTime() - started) / 1_000_000);
-        synchronized (cache) {
-            cache.put(key, findings);
+
+        java.util.concurrent.CompletableFuture<List<BugFinding>> future = new java.util.concurrent.CompletableFuture<>();
+        java.util.concurrent.CompletableFuture<List<BugFinding>> existing = inFlight.putIfAbsent(key, future);
+
+        if (existing != null) {
+            try {
+                return existing.get();
+            } catch (Exception e) {
+                throw new RuntimeException("Concurrent SpotBugs execution failed", e);
+            }
         }
-        return findings;
+
+        try {
+            long started = System.nanoTime();
+            List<BugFinding> findings = delegate.detect(code);
+            metrics.recordSpotBugsRun((System.nanoTime() - started) / 1_000_000);
+            synchronized (cache) {
+                cache.put(key, findings);
+            }
+            future.complete(findings);
+            return findings;
+        } catch (Exception e) {
+            future.completeExceptionally(e);
+            throw e;
+        } finally {
+            inFlight.remove(key);
+        }
     }
 
-    /** Number of cached results replayed. */
+    /**
+     * Number of cached results replayed.
+     *
+     * @return the number of cache hits
+     */
     public long hits() {
         return hits.get();
     }
 
-    /** Number of underlying SpotBugs executions performed. */
+    /**
+     * Number of underlying SpotBugs executions performed.
+     *
+     * @return the number of cache misses
+     */
     public long misses() {
         return misses.get();
     }
 
-    /** Current number of cached entries. */
+    /**
+     * Current number of cached entries.
+     *
+     * @return the cached entry count
+     */
     public int size() {
         return cache.size();
     }
 
+    /**
+     * Builds the cache key from the source and detector version.
+     *
+     * @param code source code whose key is computed
+     * @return the hexadecimal SHA-256 digest used as the cache key
+     * @throws IllegalStateException if SHA-256 is unavailable
+     */
     static String cacheKey(String code) {
         try {
             String material = (code == null ? "" : code) + "|" + DETECTOR_VERSION;

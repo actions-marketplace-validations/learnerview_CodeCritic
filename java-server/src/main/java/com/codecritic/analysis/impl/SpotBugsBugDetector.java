@@ -20,10 +20,25 @@ public class SpotBugsBugDetector implements BugDetector {
 
     private final SpotBugsRunner spotBugsRunner;
 
+    /**
+     * Creates a detector backed by the supplied runner.
+     *
+     * @param spotBugsRunner runner that compiles and analyzes the source
+     */
     public SpotBugsBugDetector(SpotBugsRunner spotBugsRunner) {
         this.spotBugsRunner = spotBugsRunner;
     }
 
+    /**
+     * Compiles the source, runs SpotBugs, and parses its textual output.
+     *
+     * <p>Compilation failures are reported as a single {@code COMPILATION_ERROR}
+     * finding so callers do not mistake an unable-to-analyze result for a clean
+     * pass. Any other failure yields an empty list.</p>
+     *
+     * @param code source code to analyze; may be {@code null}
+     * @return parsed findings, a compilation-error finding, or an empty list
+     */
     @Override
     public List<BugFinding> detect(String code) {
         try {

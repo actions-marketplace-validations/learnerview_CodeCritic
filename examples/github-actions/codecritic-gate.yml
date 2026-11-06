@@ -1,0 +1,36 @@
+name: CodeCritic Merge Gate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  codecritic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run CodeCritic
+        id: codecritic
+        uses: learnerview/CodeCritic@main
+        with:
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          select: modules
+          fail-on: new-failure
+          format: json
+          output: codecritic-report.json
+          # Use bridge only when the project needs to download Maven/Gradle dependencies.
+          sandbox-network: bridge
+
+      - name: Upload CodeCritic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codecritic-report
+          path: ${{ steps.codecritic.outputs.report }}
+          if-no-files-found: ignore

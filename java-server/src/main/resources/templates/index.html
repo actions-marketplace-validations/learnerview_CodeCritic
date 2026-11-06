@@ -36,11 +36,11 @@
             </form>
             <form id="signupForm" class="auth-form" style="display:none;" onsubmit="return false;">
                 <label class="field-label" for="registerUsername">Username</label>
-                <input id="registerUsername" type="text" placeholder="admin" autocomplete="username">
+                <input id="registerUsername" type="text" placeholder="admin" autocomplete="username" minlength="3" maxlength="64" required>
                 <label class="field-label" for="registerPassword">Password</label>
-                <input id="registerPassword" type="password" placeholder="••••••••" autocomplete="new-password">
+                <input id="registerPassword" type="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" maxlength="128" required>
                 <label class="field-label" for="registerConfirmPassword">Confirm Password</label>
-                <input id="registerConfirmPassword" type="password" placeholder="••••••••" autocomplete="new-password">
+                <input id="registerConfirmPassword" type="password" placeholder="Repeat password" autocomplete="new-password" minlength="8" maxlength="128" required>
                 <button id="registerBtn" class="login-btn" type="button">Sign up</button>
                 <p id="registerError" class="login-error"></p>
                 <p class="auth-switch">Already have an account? <a href="#" id="goToSignin">Sign in</a></p>

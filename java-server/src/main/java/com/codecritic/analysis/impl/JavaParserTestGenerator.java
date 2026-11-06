@@ -25,8 +25,27 @@ import java.util.stream.Collectors;
 @Component
 public class JavaParserTestGenerator implements TestGenerator {
 
+    /**
+     * Creates the generator with an empty parser state.
+     */
+    public JavaParserTestGenerator() {
+    }
+
     private static final Logger log = LoggerFactory.getLogger(JavaParserTestGenerator.class);
 
+    /**
+     * Generates a JUnit 5 test scaffold for the requested class and method.
+     *
+     * <p>When the source can be parsed, the real class name, method signature,
+     * and parameter types are extracted from it. Otherwise the supplied
+     * metadata is used, with sensible fallbacks for any missing values.</p>
+     *
+     * @param className name of the class under test; may be {@code null} or blank to infer it
+     * @param methodName name of the method under test; may be {@code null} or blank to select the first method
+     * @param parameters comma-separated parameter types used as a fallback when parsing fails
+     * @param code source code from which signatures are extracted; may be {@code null} or blank
+     * @return a response containing the generated test source
+     */
     @Override
     public TestGenerationResponse generate(String className, String methodName, String parameters, String code) {
         String finalClassName = className;

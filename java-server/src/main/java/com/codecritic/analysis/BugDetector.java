@@ -10,5 +10,11 @@ import java.util.List;
  */
 public interface BugDetector {
 
+    /**
+     * Scans Java source for potential defects.
+     *
+     * @param code source code to inspect
+     * @return findings in source order, or an empty list when none are detected
+     */
     List<BugFinding> detect(String code);
 }

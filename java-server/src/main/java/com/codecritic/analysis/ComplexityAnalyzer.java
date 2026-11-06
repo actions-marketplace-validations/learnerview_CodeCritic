@@ -8,5 +8,11 @@ import com.codecritic.dto.ComplexityResponse;
  */
 public interface ComplexityAnalyzer {
 
+    /**
+     * Analyzes the complexity of the supplied source code.
+     *
+     * @param code source code to analyze
+     * @return computed cyclomatic and cognitive complexity scores
+     */
     ComplexityResponse analyze(String code);
 }

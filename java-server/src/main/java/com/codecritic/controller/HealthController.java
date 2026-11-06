@@ -17,6 +17,17 @@ import java.util.Map;
 @RestController
 public class HealthController {
 
+    /**
+     * Creates the health controller.
+     */
+    public HealthController() {
+    }
+
+    /**
+     * Reports that the Java server is running.
+     *
+     * @return HTTP 200 with a small status map identifying the service
+     */
     @GetMapping("/health")
     public ResponseEntity<Map<String, String>> health() {
         return ResponseEntity.ok(Map.of("status", "ok", "service", "java-server"));

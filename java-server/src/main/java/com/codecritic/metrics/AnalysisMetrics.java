@@ -17,23 +17,47 @@ import java.util.concurrent.atomic.AtomicLong;
 @Component
 public class AnalysisMetrics {
 
+    /**
+     * Creates an empty metrics registry with no recorded observations.
+     */
+    public AnalysisMetrics() {
+    }
+
     private final ConcurrentHashMap<String, AtomicLong> requestCounts = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, TotalCount> latencies = new ConcurrentHashMap<>();
     private final AtomicLong spotBugsRuns = new AtomicLong();
     private final AtomicLong spotBugsTotalMs = new AtomicLong();
 
-    /** Record one completed analysis of the given type (e.g. "complexity"). */
+    /**
+     * Records one completed analysis of the given type (for example
+     * {@code "complexity"}).
+     *
+     * @param analysisType analysis category used as the metric key
+     * @param latencyMs observed latency in milliseconds
+     */
     public void record(String analysisType, long latencyMs) {
         requestCounts.computeIfAbsent(analysisType, k -> new AtomicLong()).incrementAndGet();
         latencies.computeIfAbsent(analysisType, k -> new TotalCount()).add(latencyMs);
     }
 
-    /** Record one SpotBugs execution with its wall-clock duration in ms. */
+    /**
+     * Records one SpotBugs execution with its wall-clock duration.
+     *
+     * @param durationMs duration of the execution in milliseconds
+     */
     public void recordSpotBugsRun(long durationMs) {
         spotBugsRuns.incrementAndGet();
         spotBugsTotalMs.addAndGet(durationMs);
     }
 
+    /**
+     * Builds a point-in-time, JSON-friendly snapshot of the metrics.
+     *
+     * <p>The snapshot includes a timestamp, per-analysis request counts and
+     * average latency, and SpotBugs run statistics.</p>
+     *
+     * @return an immutable-style nested map of metric names to values
+     */
     public Map<String, Object> snapshot() {
         Map<String, Object> out = new TreeMap<>();
         out.put("startedAtEpochMs", System.currentTimeMillis());

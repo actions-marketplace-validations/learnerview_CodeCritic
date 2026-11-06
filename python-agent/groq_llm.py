@@ -50,7 +50,7 @@ class GroqLLM:
         """
         self.groq_key = groq_key or os.getenv("GROQ_API_KEY")
         self.openai_key = openai_key or os.getenv("OPENAI_API_KEY")
-        self.groq_model = groq_model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        self.groq_model = groq_model or os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
         self.openai_model = openai_model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         self.groq_base_url = groq_base_url or os.getenv(
             "GROQ_BASE_URL", "https://api.groq.com/openai/v1/chat/completions"

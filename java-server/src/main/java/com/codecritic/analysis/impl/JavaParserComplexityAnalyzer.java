@@ -28,8 +28,25 @@ import org.springframework.stereotype.Component;
 @Component
 public class JavaParserComplexityAnalyzer implements ComplexityAnalyzer {
 
+    /**
+     * Creates the analyzer with an empty parser state.
+     */
+    public JavaParserComplexityAnalyzer() {
+    }
+
     private static final Logger log = LoggerFactory.getLogger(JavaParserComplexityAnalyzer.class);
 
+    /**
+     * Analyzes the supplied Java source and reports the highest cyclomatic
+     * complexity found in any single method.
+     *
+     * <p>Blank or {@code null} input yields zero scores. If the source cannot be
+     * parsed, a lightweight token-based heuristic is used instead so the caller
+     * still receives a useful approximation.</p>
+     *
+     * @param code source code to analyze; may be {@code null} or blank
+     * @return the maximum cyclomatic complexity and a derived cognitive score
+     */
     @Override
     public ComplexityResponse analyze(String code) {
         if (code == null || code.isBlank()) {
@@ -110,6 +127,12 @@ public class JavaParserComplexityAnalyzer implements ComplexityAnalyzer {
         private int current = 0;
         private int max = 0;
 
+        /**
+         * Tracks complexity per method and keeps the highest score seen.
+         *
+         * @param md method declaration being visited
+         * @param arg visitor argument; unused
+         */
         @Override
         public void visit(MethodDeclaration md, Void arg) {
             int before = current;
@@ -119,36 +142,72 @@ public class JavaParserComplexityAnalyzer implements ComplexityAnalyzer {
             current = before;
         }
 
+        /**
+         * Adds one decision point for an {@code if} statement.
+         *
+         * @param n statement being visited
+         * @param arg visitor argument; unused
+         */
         @Override
         public void visit(IfStmt n, Void arg) {
             current++;
             super.visit(n, arg);
         }
 
+        /**
+         * Adds one decision point for a {@code for} loop.
+         *
+         * @param n statement being visited
+         * @param arg visitor argument; unused
+         */
         @Override
         public void visit(ForStmt n, Void arg) {
             current++;
             super.visit(n, arg);
         }
 
+        /**
+         * Adds one decision point for an enhanced {@code for} loop.
+         *
+         * @param n statement being visited
+         * @param arg visitor argument; unused
+         */
         @Override
         public void visit(ForEachStmt n, Void arg) {
             current++;
             super.visit(n, arg);
         }
 
+        /**
+         * Adds one decision point for a {@code while} loop.
+         *
+         * @param n statement being visited
+         * @param arg visitor argument; unused
+         */
         @Override
         public void visit(WhileStmt n, Void arg) {
             current++;
             super.visit(n, arg);
         }
 
+        /**
+         * Adds one decision point for a {@code do}-{@code while} loop.
+         *
+         * @param n statement being visited
+         * @param arg visitor argument; unused
+         */
         @Override
         public void visit(DoStmt n, Void arg) {
             current++;
             super.visit(n, arg);
         }
 
+        /**
+         * Adds one decision point per non-default {@code switch} label.
+         *
+         * @param n switch entry being visited
+         * @param arg visitor argument; unused
+         */
         @Override
         public void visit(SwitchEntry n, Void arg) {
             if (n.getLabels() != null && !n.getLabels().isEmpty()) {
@@ -157,18 +216,36 @@ public class JavaParserComplexityAnalyzer implements ComplexityAnalyzer {
             super.visit(n, arg);
         }
 
+        /**
+         * Adds one decision point for a {@code catch} clause.
+         *
+         * @param n clause being visited
+         * @param arg visitor argument; unused
+         */
         @Override
         public void visit(CatchClause n, Void arg) {
             current++;
             super.visit(n, arg);
         }
 
+        /**
+         * Adds one decision point for a ternary expression.
+         *
+         * @param n expression being visited
+         * @param arg visitor argument; unused
+         */
         @Override
         public void visit(ConditionalExpr n, Void arg) {
             current++;
             super.visit(n, arg);
         }
 
+        /**
+         * Adds one decision point for each logical {@code &&} or {@code ||}.
+         *
+         * @param n expression being visited
+         * @param arg visitor argument; unused
+         */
         @Override
         public void visit(BinaryExpr n, Void arg) {
             if (n.getOperator() == BinaryExpr.Operator.AND || n.getOperator() == BinaryExpr.Operator.OR) {
@@ -177,6 +254,11 @@ public class JavaParserComplexityAnalyzer implements ComplexityAnalyzer {
             super.visit(n, arg);
         }
 
+        /**
+         * Returns the highest method complexity found, clamped to at least one.
+         *
+         * @return the maximum cyclomatic complexity
+         */
         public int getMaxCyclomatic() {
             return Math.max(1, max);
         }

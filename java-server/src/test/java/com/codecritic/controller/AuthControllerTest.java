@@ -7,11 +7,13 @@ import com.codecritic.security.JwtTokenProvider;
 import com.codecritic.service.AuthService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -27,10 +29,10 @@ class AuthControllerTest {
     @Autowired
     private MockMvc mockMvc;
 
-    @MockBean
+    @MockitoBean
     private AuthService authService;
 
-    @MockBean
+    @MockitoBean
     private JwtTokenProvider jwtTokenProvider;
 
     @Test
@@ -82,20 +84,20 @@ class AuthControllerTest {
 
         mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"username\":\"newuser\",\"password\":\"newpass\"}"))
+                        .content("{\"username\":\"newuser\",\"password\":\"newpass123\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.token").value("jwt-token"))
                 .andExpect(jsonPath("$.username").value("newuser"));
     }
 
     @Test
-    void register_badCredentials_returns401() throws Exception {
+    void register_existingUsername_returns409() throws Exception {
         when(authService.register(any(RegisterRequest.class)))
-                .thenThrow(new BadCredentialsException("Username already exists"));
+                .thenThrow(new ResponseStatusException(HttpStatus.CONFLICT, "Username already exists"));
 
         mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"username\":\"existing\",\"password\":\"pass\"}"))
-                .andExpect(status().isUnauthorized());
+                        .content("{\"username\":\"existing\",\"password\":\"password123\"}"))
+                .andExpect(status().isConflict());
     }
 }

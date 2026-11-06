@@ -16,6 +16,21 @@ import java.util.List;
 @Component
 public class PatternBugDetector implements BugDetector {
 
+    /**
+     * Creates the pattern-based detector.
+     */
+    public PatternBugDetector() {
+    }
+
+    /**
+     * Scans each line of the source for simple, recognizable defect patterns.
+     *
+     * <p>Currently detects literal division by zero and unguarded
+     * {@code toString()} calls. Blank or {@code null} input produces no findings.</p>
+     *
+     * @param code source code to inspect; may be {@code null} or blank
+     * @return findings in source order, or an empty list when none are detected
+     */
     @Override
     public List<BugFinding> detect(String code) {
         List<BugFinding> bugs = new ArrayList<>();

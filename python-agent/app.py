@@ -10,20 +10,23 @@ import time
 import uuid
 import asyncio
 import logging
+import threading
+import hmac
 from contextlib import asynccontextmanager
 from pythonjsonlogger import jsonlogger
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agent import (
     run_review_pipeline,
     generate_full_test_suite,
     analyze_github_repository,
     analyze_debug_issue,
+    MAX_REPO_FILES,
     LLM,
 )
 
@@ -31,7 +34,7 @@ from agent import (
 class ReviewRequest(BaseModel):
     """Request payload for submitting Java source to the agent."""
 
-    code: str
+    code: str = Field(min_length=10, max_length=1_500_000)
 
 
 class ReviewResponse(BaseModel):
@@ -41,7 +44,7 @@ class ReviewResponse(BaseModel):
 
 
 class TestGenerationRequest(BaseModel):
-    code: str
+    code: str = Field(min_length=1, max_length=1_500_000)
 
 
 class TestGenerationResponse(BaseModel):
@@ -49,9 +52,9 @@ class TestGenerationResponse(BaseModel):
 
 
 class RepositoryAnalysisRequest(BaseModel):
-    repoUrl: str
+    repoUrl: str = Field(min_length=1, max_length=2048)
     branch: str | None = None
-    maxFiles: int = 15
+    maxFiles: int = Field(default=15, ge=1, le=MAX_REPO_FILES)
     githubToken: str | None = None
 
 
@@ -61,12 +64,18 @@ class RepositoryAnalysisResponse(BaseModel):
     javaStaticFindings: list[dict]
     repoMetrics: dict
     aiSummary: str
+    # Effective file-limit reporting: ``filesAnalyzed`` above is the list of analyzed
+    # files, while these counts make the discovered-vs-analyzed distinction explicit.
+    maxFilesRequested: int | None = None
+    maxFilesApplied: int | None = None
+    filesDiscovered: int | None = None
+    analyzedFileCount: int | None = None
 
 
 class DebugRequest(BaseModel):
-    code: str
-    errorLog: str
-    language: str = "java"
+    code: str = Field(min_length=1, max_length=1_500_000)
+    errorLog: str = Field(min_length=1, max_length=500_000)
+    language: str = Field(default="java", min_length=1, max_length=32)
 
 
 class DebugResponse(BaseModel):
@@ -95,7 +104,7 @@ async def wait_for_java_server():
                     return
         except Exception:
             pass
-        logger.warn("Java server not ready, retrying...", extra={"attempt": i + 1, "requestId": "system"})
+        logger.warning("Java server not ready, retrying...", extra={"attempt": i + 1, "requestId": "system"})
         await asyncio.sleep(2)
     logger.error("Java server failed to become ready in time", extra={"requestId": "system"})
 
@@ -107,20 +116,104 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CodeCritic Agent", version="0.1.0", lifespan=lifespan)
-cors_origins = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",") if origin.strip()]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins if cors_origins else ["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# The browser talks to the Java service, never to this agent. Cross-origin access
+# therefore stays disabled unless an operator explicitly configures an allowlist.
+cors_origins = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if origin.strip()]
+if cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=False,
+        allow_methods=["POST", "GET", "OPTIONS"],
+        allow_headers=["Content-Type", "X-CodeCritic-Agent-Token"],
+    )
 
 MAX_REQUEST_BYTES = int(os.getenv("MAX_REQUEST_BYTES", "1500000"))
+INTERNAL_AGENT_TOKEN = os.getenv("PYTHON_AGENT_TOKEN", "").strip()
+ALLOW_INSECURE_AGENT = os.getenv("ALLOW_INSECURE_AGENT", "").lower() in {"1", "true", "yes"}
+PROTECTED_AGENT_PATHS = {"/review", "/generate-tests", "/analyze-repository", "/debug"}
+if not INTERNAL_AGENT_TOKEN and not ALLOW_INSECURE_AGENT:
+    logger.error(
+        "PYTHON_AGENT_TOKEN is not set; protected agent endpoints will fail closed. "
+        "Set it to the same value as the Java service, or set ALLOW_INSECURE_AGENT=1 "
+        "for local-only development.",
+        extra={"requestId": "system"},
+    )
 RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "60"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+# Upper bound on distinct client IPs tracked at once. Without this the sliding-window
+# map grows without limit for traffic from many distinct IPs.
+RATE_LIMIT_MAX_IPS = int(os.getenv("RATE_LIMIT_MAX_IPS", "10000"))
 
-REQUEST_TIMES_BY_IP: dict[str, deque[float]] = defaultdict(deque)
+# LRU-ordered sliding-window state per client IP. The lock keeps it safe under the
+# thread pool uvicorn uses for sync endpoints.
+REQUEST_TIMES_BY_IP: "OrderedDict[str, deque[float]]" = OrderedDict()
+_rate_limit_lock = threading.Lock()
+
+
+def check_rate_limit(ip: str, now: float) -> bool:
+    """Record a hit for ``ip`` and return False when it is over the sliding-window limit.
+
+    The per-IP map is bounded: the most recently seen IP is moved to the end and the
+    least recently used entry is evicted once the size exceeds ``RATE_LIMIT_MAX_IPS``.
+    """
+    with _rate_limit_lock:
+        queue = REQUEST_TIMES_BY_IP.get(ip)
+        if queue is None:
+            queue = deque()
+            REQUEST_TIMES_BY_IP[ip] = queue
+        else:
+            REQUEST_TIMES_BY_IP.move_to_end(ip)
+        while queue and now - queue[0] > RATE_LIMIT_WINDOW_SECONDS:
+            queue.popleft()
+        allowed = len(queue) < RATE_LIMIT_REQUESTS
+        if allowed:
+            queue.append(now)
+        while len(REQUEST_TIMES_BY_IP) > RATE_LIMIT_MAX_IPS:
+            REQUEST_TIMES_BY_IP.popitem(last=False)
+        return allowed
+
+
+async def enforce_request_size(request: Request, request_id: str) -> JSONResponse | None:
+    """Reject oversized bodies, trusting neither Content-Length nor chunked framing.
+
+    Content-Length is used only as a cheap early rejection. The authoritative check
+    counts bytes actually read from the request stream and aborts as soon as the limit
+    is exceeded, so a missing header or chunked encoding cannot bypass it. The buffered
+    body is re-attached to the request so downstream handlers still parse it normally.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_REQUEST_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Payload too large", "requestId": request_id},
+                    headers={"X-Request-Id": request_id},
+                )
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Invalid content-length header", "requestId": request_id},
+                headers={"X-Request-Id": request_id},
+            )
+
+    if request.method in ("POST", "PUT", "PATCH"):
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > MAX_REQUEST_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Payload too large", "requestId": request_id},
+                    headers={"X-Request-Id": request_id},
+                )
+        # Starlette's Request.stream() replays _body when set, so the handler can still
+        # read the body we consumed for the size check.
+        request._body = bytes(body)
+    return None
+
+
 METRICS: dict[str, object] = {
     "startedAtEpochMs": int(time.time() * 1000),
     "requestCount": 0,
@@ -144,37 +237,34 @@ def is_java_code(code: str) -> bool:
 async def production_middleware(request: Request, call_next):
     request_id = str(uuid.uuid4())
     request.state.request_id = request_id
+    if request.url.path in PROTECTED_AGENT_PATHS and not ALLOW_INSECURE_AGENT:
+        if not INTERNAL_AGENT_TOKEN:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Internal service authentication is not configured", "requestId": request_id},
+                headers={"X-Request-Id": request_id},
+            )
+        supplied = request.headers.get("X-CodeCritic-Agent-Token", "")
+        if not hmac.compare_digest(supplied, INTERNAL_AGENT_TOKEN):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Internal service authentication required", "requestId": request_id},
+                headers={"X-Request-Id": request_id},
+            )
     started = time.time()
     endpoint = request.url.path
     ip = request.client.host if request.client else "unknown"
 
-    content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            if int(content_length) > MAX_REQUEST_BYTES:
-                return JSONResponse(
-                    status_code=413,
-                    content={"detail": "Payload too large", "requestId": request_id},
-                    headers={"X-Request-Id": request_id},
-                )
-        except ValueError:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Invalid content-length header", "requestId": request_id},
-                headers={"X-Request-Id": request_id},
-            )
+    too_large = await enforce_request_size(request, request_id)
+    if too_large is not None:
+        return too_large
 
-    now = time.time()
-    queue = REQUEST_TIMES_BY_IP[ip]
-    while queue and now - queue[0] > RATE_LIMIT_WINDOW_SECONDS:
-        queue.popleft()
-    if len(queue) >= RATE_LIMIT_REQUESTS:
+    if not check_rate_limit(ip, time.time()):
         return JSONResponse(
             status_code=429,
             content={"detail": "Rate limit exceeded", "requestId": request_id},
             headers={"X-Request-Id": request_id},
         )
-    queue.append(now)
 
     response = await call_next(request)
     latency_ms = int((time.time() - started) * 1000)
@@ -227,7 +317,11 @@ def metrics() -> dict:
         "statusCounts": dict(METRICS["statusCounts"]),
         "endpointCounts": dict(METRICS["endpointCounts"]),
         "latencyByEndpoint": latency_summary,
-        "rateLimit": {"requests": RATE_LIMIT_REQUESTS, "windowSeconds": RATE_LIMIT_WINDOW_SECONDS},
+        "rateLimit": {
+            "requests": RATE_LIMIT_REQUESTS,
+            "windowSeconds": RATE_LIMIT_WINDOW_SECONDS,
+            "maxTrackedIps": RATE_LIMIT_MAX_IPS,
+        },
         "maxRequestBytes": MAX_REQUEST_BYTES,
     }
 
@@ -246,9 +340,12 @@ def ready() -> dict:
 
 
 @app.post("/review", response_model=ReviewResponse)
-def review(request: ReviewRequest) -> ReviewResponse:
+def review(request: ReviewRequest, http_request: Request) -> ReviewResponse:
     if not is_java_code(request.code):
-        logger.warn("Rejected non-Java code submission", extra={"requestId": "none"})
+        logger.warning(
+            "Rejected non-Java code submission",
+            extra={"requestId": http_request.state.request_id},
+        )
         raise HTTPException(status_code=400, detail="Only Java code is supported for review")
     """Run the full review pipeline and return either a review or a structured error.
 
@@ -260,21 +357,21 @@ def review(request: ReviewRequest) -> ReviewResponse:
     try:
         return ReviewResponse(review=run_review_pipeline(request.code))
     except Exception as exc:
-        logger.error("Review pipeline failed", extra={"requestId": "none", "error": str(exc)})
+        logger.error("Review pipeline failed", extra={"requestId": http_request.state.request_id, "error": str(exc)})
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
 @app.post("/generate-tests", response_model=TestGenerationResponse)
-def generate_tests(request: TestGenerationRequest) -> TestGenerationResponse:
+def generate_tests(request: TestGenerationRequest, http_request: Request) -> TestGenerationResponse:
     try:
         return TestGenerationResponse(tests=generate_full_test_suite(request.code))
     except Exception as exc:
-        logger.error("Test generation failed", extra={"requestId": getattr(request.state, "request_id", "none"), "error": str(exc)})
+        logger.error("Test generation failed", extra={"requestId": http_request.state.request_id, "error": str(exc)})
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
 @app.post("/analyze-repository", response_model=RepositoryAnalysisResponse)
-def analyze_repository(request: RepositoryAnalysisRequest) -> RepositoryAnalysisResponse:
+def analyze_repository(request: RepositoryAnalysisRequest, http_request: Request) -> RepositoryAnalysisResponse:
     try:
         result = analyze_github_repository(
             repo_url=request.repoUrl,
@@ -284,12 +381,12 @@ def analyze_repository(request: RepositoryAnalysisRequest) -> RepositoryAnalysis
         )
         return RepositoryAnalysisResponse(**result)
     except Exception as exc:
-        logger.error("Repository analysis failed", extra={"requestId": getattr(request.state, "request_id", "none"), "error": str(exc)})
+        logger.error("Repository analysis failed", extra={"requestId": http_request.state.request_id, "error": str(exc)})
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
 @app.post("/debug", response_model=DebugResponse)
-def debug_code(request: DebugRequest) -> DebugResponse:
+def debug_code(request: DebugRequest, http_request: Request) -> DebugResponse:
     try:
         diagnosis = analyze_debug_issue(
             code=request.code,
@@ -298,5 +395,5 @@ def debug_code(request: DebugRequest) -> DebugResponse:
         )
         return DebugResponse(diagnosis=diagnosis)
     except Exception as exc:
-        logger.error("Debug analysis failed", extra={"requestId": getattr(request.state, "request_id", "none"), "error": str(exc)})
+        logger.error("Debug analysis failed", extra={"requestId": http_request.state.request_id, "error": str(exc)})
         raise HTTPException(status_code=500, detail="Internal server error") from exc

@@ -1,125 +1,131 @@
 # CodeCritic
 
-CodeCritic is our hybrid agentic code-review system. We pair a **Java analysis engine** with a **Python LLM orchestrator**: the Java layer does the deterministic work (complexity, bug heuristics, JUnit scaffolds, SpotBugs), and the Python layer plans and synthesizes the human-readable review with an LLM (Groq primary, OpenAI fallback). Putting the deterministic analysis on real ASTs and keeping the LLM for synthesis is exactly the split we want — the machine does what machines are good at, and the LLM only writes the review.
+CodeCritic is a deterministic Java merge gate. It runs the tests affected by a
+pull request, compares base and head failures, and fails only on the policy you
+choose. The gate does not depend on an LLM.
 
-## Live demo
+The web dashboard is a secondary demo of the same deterministic analyzers plus
+advisory LLM synthesis. It is useful for showing the analysis surface, but it is
+not required for CI.
 
-We run the Java server on Render's free tier:
+## What the gate does
 
-- **Dashboard:** <https://codecritic-java.onrender.com/> — register an account and sign in.
-- The Python agent and LLM (Groq) are wired in, so you can register, paste a class, and see a review end-to-end.
+1. Maps changed paths to Maven or Gradle modules.
+2. Expands the selection through declared module dependencies, so a shared
+   module change also runs dependent modules.
+3. Falls back to the full suite when module selection is uncertain.
+4. Runs base and head in isolated git worktrees inside Docker.
+5. Compares per-test failures, so a passing suite that was already failing
+   before the PR is not reported as a new regression.
+6. Emits HTML or JSON evidence and returns a stable exit code.
 
-> Note: Render's free tier sleeps after ~15 minutes of inactivity, so the first load after a break can take 30–60 seconds to wake up.
+The primary public interface is the `verification` CLI and the root
+`action.yml`. The Spring server and Python agent are the demo/dashboard layer.
 
-## What we built
+## Build and run the gate
 
-- **Hybrid, not black-box** — static analysis runs deterministically on real ASTs (JavaParser) and finds obvious risks with a fast pattern detector; the LLM only turns findings into a review, it never invents them.
-- **Concurrent and thread-safe** — every SpotBugs run gets a unique temp directory and results are cached by source hash behind an LRU, so memory stays bounded and we never collide under parallel reviews.
-- **Distributed-ready** — Java service and Python agent talk over HTTP; we can add an async job queue backed by Redis/SimplyDone4J whenever we need it.
-- **Async jobs with idempotency** — job submissions are keyed deterministically (SHA-256 of type + payload), so retries never duplicate work.
-- **Stateless JWT auth** — secrets come from the environment, tokens are stateless, and the whole thing scales horizontally.
+```powershell
+# The verification CLI does not need MongoDB, Redis, or Python.
+mvn -B -pl verification -am package
+java -jar verification\target\codecritic-verification.jar `
+  --repo . --base main --head HEAD `
+  --run-tests --select modules --fail-on new-failure `
+  --format json --out codecritic-report.json
+```
 
-## Quick start (Docker)
+Without `--run-tests`, the CLI produces a callable-level impact report only.
+Docker is a hard requirement for test execution; there is no host fallback.
+
+| Policy | Fails when |
+|---|---|
+| `new-failure` (default) | head has a failure that base did not have |
+| `any-failure` | head has any test failure |
+| `high-risk` | risk band is `HIGH` and the head test result is healthy |
+| `never` | never; always writes the report and exits `0` |
+
+Exit codes: `0` pass/disabled, `1` gate failure, `2` usage/git/report-write
+error. Use `--select all` to force the full suite.
+
+Module selection falls back to the full suite for build-file changes,
+root-level changes, single-module projects, unmapped changes, a selected module
+missing at either revision, or a root module that depends on the selection. The
+dependency graph is best-effort: use `--select all` when dynamic Gradle logic or
+unresolved Maven properties make the graph uncertain.
+
+Docker runs with `--network none` by default. Set
+`CODECRITIC_SANDBOX_NETWORK=bridge` only when Maven or Gradle must download
+dependencies; build scripts are untrusted and bridge networking permits outbound
+traffic.
+
+Run the full build gate:
+
+```powershell
+mvn -B clean verify
+```
+
+This compiles both modules, runs all tests, applies the JaCoCo threshold, and
+fails on Javadoc warnings for public types and members. The `java-server`
+integration tests need MongoDB on `localhost:27017`; without it, start just the
+database with `docker compose up -d mongo`, or build only the CLI with
+`mvn -B -pl verification package`. Generated API docs are written to
+`java-server/target/reports/apidocs` and `verification/target/reports/apidocs`.
+
+## Use the GitHub Action
+
+The root `action.yml` is a composite action. The consumer workflow must fetch
+enough history to resolve the base commit:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- uses: learnerview/CodeCritic@main
+  with:
+    base: ${{ github.event.pull_request.base.sha }}
+    head: ${{ github.event.pull_request.head.sha }}
+    select: modules
+    fail-on: new-failure
+    sandbox-network: bridge
+```
+
+See [examples/github-actions/codecritic-gate.yml](examples/github-actions/codecritic-gate.yml)
+for a complete workflow and [examples/github-actions/README.md](examples/github-actions/README.md)
+for inputs and security notes.
+
+## How it works
+
+- [Analysis algorithms](docs/analysis-algorithms.md): callable diff, impact and
+  risk scoring, module discovery, reverse dependency closure, failure
+  comparison, Docker sandboxing, gate decisions.
+- [Architecture](docs/architecture.md): service boundaries, verification flow,
+  concurrency, idempotent jobs, observability.
+- [CLI and API reference](docs/api.md): options, exit codes, HTTP routes.
+- [Known limitations](docs/known-limitations.md): what is heuristic and what
+  falls back to the full suite.
+- [Benchmark](docs/benchmark.md): full-suite vs module-aware runtime harness.
+
+## Run the dashboard demo
+
+`docker-compose.yml` starts the Java server, Python agent, MongoDB, and Redis
+with the development profile and local demo credentials:
 
 ```bash
 docker compose up --build
+curl http://localhost:8080/health
+curl http://localhost:8000/health
 ```
 
-- Dashboard: `http://localhost:8080/` (register an account on first visit)
+Open `http://localhost:8080` for the dashboard. The demo account is `admin` /
+`admin`; these values are accepted only because Compose sets
+`SPRING_PROFILES_ACTIVE=dev`. Supply `GROQ_API_KEY` or `OPENAI_API_KEY` to enable
+LLM synthesis; without either key, AI routes degrade to deterministic output.
 
-- See [docs/deployment.md](docs/deployment.md) for local (non-Docker) and Render deployment.
-
-## Architecture at a glance
-
-```
-  Browser (CodeMirror UI)
-       │
-       ├── login / config ──→ Java Server (:8080)
-       │                        JWT filter · AnalysisController
-       │                        ├─ /complexity  (deterministic)
-       │                        ├─ /bugs        (pattern + SpotBugs)
-       │                        ├─ /generate-test
-       │                        └─ /jobs/*      (Redis queue)
-       │
-       └── AI features ──────→ Python Agent (:8000)
-                                    │
-                                    ├─ calls Java REST (with token) → /complexity /bugs /generate-test
-                                    ├─ collects findings
-                                    └─ LLM synthesis (Groq → OpenAI)
-                                         │
-                                         ▼
-                                  Natural-language review / tests
-```
-
-We document the full design and data flow in [docs/architecture.md](docs/architecture.md).
-
-## Repo layout
-
-- `java-server/` – Spring Boot analysis microservice (AST complexity, bug detection, test generation, JWT security, optional Redis jobs)
-- `python-agent/` – FastAPI LLM orchestrator + HTTP wrappers
-- `docs/` – our design, API reference, algorithms, security, deployment, and known limitations
-- `docker-compose.yml`, `render.yaml` – deployment
-- `.env.example` – environment variables
-
-## Quick API overview
-
-All Java `/api/**` endpoints require a JWT (except auth/config/health). Use the live demo URL below, or `http://localhost:8080` locally.
+The Java service calls the Python agent only through its internal
+`PythonAgentClient`. Set `PYTHON_AGENT_TOKEN` to the same random secret in both
+services; Python review endpoints fail closed without it. For local-only runs
+you can set `ALLOW_INSECURE_AGENT=1`, but never on a reachable deployment. User
+JWTs are accepted by Java and are never used as Python service credentials.
 
 ```bash
-# create your account (no preset users) — reuse these creds in the login below
-curl -X POST http://localhost:8080/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"username":"me","password":"secret"}'
-
-# get a token
-curl -X POST http://localhost:8080/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"me","password":"secret"}'
-
-# deterministic analysis
-curl -X POST http://localhost:8080/api/complexity -H "Authorization: Bearer <TOKEN>" \
-  -H "Content-Type: application/json" -d '{"code":"public class A { int f(){ if(true){return 1;} return 0; } }"}'
-curl -X POST http://localhost:8080/api/bugs -H "Authorization: Bearer <TOKEN>" \
-  -H "Content-Type: application/json" -d '{"code":"public class A { int f(){ return 10/0; } }"}'
-curl -X POST http://localhost:8080/api/generate-test -H "Authorization: Bearer <TOKEN>" \
-  -H "Content-Type: application/json" -d '{"className":"Calc","methodName":"add","parameters":"int,int","code":"..."}'
-
-# Python agent
-curl -X POST http://localhost:8000/review -H "Content-Type: application/json" \
-  -d '{"code":"public class Calculator { public int divide(int a,int b){ return a/b; } }"}'
-curl -X POST http://localhost:8000/generate-tests -H "Content-Type: application/json" \
-  -d '{"code":"public class Calculator { public int add(int a,int b){ return a+b; } }"}'
-curl -X POST http://localhost:8000/analyze-repository -H "Content-Type: application/json" \
-  -d '{"repoUrl":"https://github.com/octocat/Hello-World","maxFiles":10}'
-curl -X POST http://localhost:8000/debug -H "Content-Type: application/json" \
-  -d '{"language":"java","code":"public class A { int f(int x){ return 10/x; } }","errorLog":"ArithmeticException: / by zero"}'
+docker compose down
 ```
-
-Full reference and examples: [docs/api.md](docs/api.md)
-
-## Documentation
-
-| Doc | Contents |
-|-----|----------|
-| [docs/architecture.md](docs/architecture.md) | System design, flow diagram, module responsibilities |
-| [docs/api.md](docs/api.md) | Every endpoint, request/response shapes, cURL examples |
-| [docs/analysis-algorithms.md](docs/analysis-algorithms.md) | Complexity, bug-detection, and test-generation internals |
-| [docs/security.md](docs/security.md) | JWT model, threat model, secrets guidance |
-| [docs/deployment.md](docs/deployment.md) | Docker, local, and Render deploy steps |
-| [docs/known-limitations.md](docs/known-limitations.md) | Trade-offs we accept & our roadmap |
-| [docs/sample-analysis-report.md](docs/sample-analysis-report.md) | A real repository-analysis output |
-
-## Environment variables
-
-The core ones: `GROQ_API_KEY` (required), `OPENAI_API_KEY` (fallback), `JAVA_SERVER_URL`, `AUTH_USERNAME`/`AUTH_PASSWORD`, `JWT_SECRET`, `CORS_ALLOW_ORIGINS`. See [docs/deployment.md](docs/deployment.md) and `.env.example` for the full list.
-
-## Testing
-
-```bash
-cd java-server && mvn test   # core suite: auth/JWT, analysis, cache, jobs, metrics
-cd python-agent && python integration_test.py
-```
-
-## License
-
-MIT

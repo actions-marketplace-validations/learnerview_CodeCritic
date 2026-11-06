@@ -1,14 +1,3 @@
-const IS_LOCAL = ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
-let PYTHON_AGENT_BASE = window.CODECRITIC_PYTHON_API || (IS_LOCAL ? `${window.location.protocol}//${window.location.hostname}:8000` : '');
-fetch('/api/config')
-    .then((r) => (r.ok ? r.json() : null))
-    .then((cfg) => {
-        if (cfg && cfg.pythonAgentUrl) PYTHON_AGENT_BASE = cfg.pythonAgentUrl;
-        console.log(`CodeCritic: Python agent at ${PYTHON_AGENT_BASE}`);
-    })
-    .catch(() => {
-        console.warn('CodeCritic: /api/config unavailable, keeping default agent URL');
-    });
 const TOKEN_KEY = 'codecritic_token';
 const USERNAME_KEY = 'codecritic_username';
 
@@ -18,7 +7,7 @@ const toText = (value) => (typeof value === 'string' ? value : JSON.stringify(va
 const withSpinner = (text) => `<span class="loading-spinner"></span>${text}`;
 const withoutSpinner = (text) => text.replace(/<span class="loading-spinner"><\/span>/g, '');
 
-console.log('CodeCritic: dashboard v2.1.0 (JWT + unified workspace + async jobs)');
+console.log('CodeCritic: deterministic-first review workspace');
 
 const SAMPLES = {
     simple: `public class Hello {
@@ -373,8 +362,17 @@ function initAuth() {
     if (registerBtn) {
         registerBtn.addEventListener('click', async () => {
             if (registerError) registerError.textContent = '';
+            const username = byId('registerUsername').value.trim();
             const password = byId('registerPassword').value;
             const confirmPassword = byId('registerConfirmPassword').value;
+            if (username.length < 3) {
+                if (registerError) registerError.textContent = 'Username must be at least 3 characters';
+                return;
+            }
+            if (password.length < 8) {
+                if (registerError) registerError.textContent = 'Password must be at least 8 characters';
+                return;
+            }
             if (password !== confirmPassword) {
                 if (registerError) registerError.textContent = 'Passwords do not match';
                 return;
@@ -383,7 +381,7 @@ function initAuth() {
             registerBtn.innerHTML = withSpinner('Creating account...');
             try {
                 const data = await postJson('/api/auth/register', {
-                    username: byId('registerUsername').value.trim(),
+                    username: username,
                     password: password
                 });
                 setToken(data.token, data.username);
@@ -451,7 +449,7 @@ function initReviewPage() {
     const statusText = byId('statusText');
     const analyzeBtn = byId('analyzeBtn');
 
-    const setStatus = (text) => { if (statusText) statusText.textContent = text; };
+    const setStatus = (text) => { if (statusText) statusText.innerHTML = text; };
     const setError = () => {
         if (statusText) { statusText.textContent = 'Analysis failed'; statusText.classList.add('error'); }
         if (output) output.classList.add('error');
@@ -505,8 +503,7 @@ function initReviewPage() {
     const runFullTestGeneration = async () => {
         setStatus(withSpinner('Generating complete AI test suite...'));
         clearError();
-        if (!PYTHON_AGENT_BASE) throw new Error('Python agent URL is not loaded yet - wait a moment and try again.');
-        const data = await postJson(`${PYTHON_AGENT_BASE}/generate-tests`, { code: getCode() });
+        const data = await postJson('/api/generate-tests', { code: getCode() });
         setStructuredView('ai', data.tests ?? data, data.tests ?? data);
         setStatus('Complete AI test suite generated');
         toast('AI test suite ready', 'success');
@@ -515,8 +512,7 @@ function initReviewPage() {
     const runReview = async () => {
         setStatus(withSpinner('Running AI review...'));
         clearError();
-        if (!PYTHON_AGENT_BASE) throw new Error('Python agent URL is not loaded yet - wait a moment and try again.');
-        const data = await postJson(`${PYTHON_AGENT_BASE}/review`, { code: getCode() });
+        const data = await postJson('/api/review', { code: getCode() });
         setStructuredView('ai', data.review ?? data, data.review ?? data);
         setStatus('AI review complete');
         toast('AI review complete', 'success');
@@ -582,8 +578,7 @@ function initRepositoryPage() {
         }
         if (repoOutput) repoOutput.classList.remove('error');
         try {
-            if (!PYTHON_AGENT_BASE) throw new Error('Python agent URL is not loaded yet - wait a moment and try again.');
-            const data = await postJson(`${PYTHON_AGENT_BASE}/analyze-repository`, {
+            const data = await postJson('/api/analyze-repository', {
                 repoUrl: repoUrl.value,
                 branch: repoBranch?.value || null,
                 maxFiles: Number(repoMaxFiles?.value || 15),
@@ -641,9 +636,8 @@ function initDebugPage() {
             }
             if (debugOutput) debugOutput.classList.remove('error');
             try {
-                if (!PYTHON_AGENT_BASE) throw new Error('Python agent URL is not loaded yet - wait a moment and try again.');
                 const code = editor ? editor.getValue() : debugCodeTextarea.value;
-                const data = await postJson(`${PYTHON_AGENT_BASE}/debug`, {
+                const data = await postJson('/api/debug', {
                     code,
                     errorLog: debugErrorInput?.value || '',
                     language: debugLanguage?.value || 'java'
@@ -807,7 +801,9 @@ function renderStructured(kind, data) {
     }
     if (kind === 'ai') {
         const text = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
-        return `<div class="ai-review"><span class="ai-badge">AI</span>${esc(text)}</div>`;
+        const sections = text.split(/--- AI REVIEW(?: UNAVAILABLE)? ---/);
+        const review = sections.length > 1 ? sections[sections.length - 1].trim() : text.trim();
+        return `<div class="ai-review"><span class="ai-badge">AI</span>${esc(review || '(no review)')}</div>`;
     }
     return `<pre class="fallback">${esc(toText(data))}</pre>`;
 }

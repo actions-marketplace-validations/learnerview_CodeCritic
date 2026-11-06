@@ -20,9 +20,21 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import java.util.List;
 import java.util.stream.Collectors;
 
+/**
+ * Security configuration for the HTTP API and static review pages.
+ *
+ * <p>Authentication is stateless and JWT-based: the {@link JwtAuthFilter}
+ * populates the security context from a Bearer token, {@code /api/**} requests
+ * require authentication, and the configured permit-all paths plus static
+ * resources remain public. CORS is configured explicitly so wildcard origins
+ * are never combined with credentials.</p>
+ */
 @Configuration
 @EnableWebSecurity
 public class WebSecurityConfig {
+
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(WebSecurityConfig.class);
 
     private final JwtAuthFilter jwtAuthFilter;
     private final JwtProperties jwtProperties;
@@ -30,16 +42,34 @@ public class WebSecurityConfig {
     @Value("${codecritic.cors.allowed-origins:*}")
     private String allowedOrigins;
 
+    /**
+     * Creates the security configuration.
+     *
+     * @param jwtAuthFilter filter that authenticates requests from a Bearer token
+     * @param jwtProperties JWT settings including the permit-all paths
+     */
     public WebSecurityConfig(JwtAuthFilter jwtAuthFilter, JwtProperties jwtProperties) {
         this.jwtAuthFilter = jwtAuthFilter;
         this.jwtProperties = jwtProperties;
     }
 
+    /**
+     * Provides the password hashing strategy used for stored credentials.
+     *
+     * @return a BCrypt password encoder
+     */
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }
 
+    /**
+     * Builds the stateless security filter chain.
+     *
+     * @param http HTTP security builder supplied by Spring Security
+     * @return the configured filter chain
+     * @throws Exception if the filter chain cannot be built
+     */
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
@@ -62,23 +92,53 @@ public class WebSecurityConfig {
         return http.build();
     }
 
+    /**
+     * Builds the CORS policy.
+     *
+     * <p>Wildcard and credentials are deliberately never enabled together.
+     * {@code setAllowedOriginPatterns("*")} does not send a literal {@code *} back to the
+     * browser -- it makes Spring <em>reflect whatever Origin asked</em>, so pairing it with
+     * {@code allowCredentials(true)} means every site on the internet is treated as a
+     * first-party origin for a credentialed request against {@code /**}. An explicit
+     * allowlist keeps credentials usable; a wildcard keeps local development working but
+     * drops credentials, which is the safe half of the trade.
+     *
+     * @return a CORS source applying the resolved policy to every path
+     */
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        if (allowedOrigins != null && !allowedOrigins.isBlank() && !"*".equals(allowedOrigins)) {
-            config.setAllowedOrigins(
-                    List.of(allowedOrigins.split(",")).stream()
-                            .map(String::trim)
-                            .collect(Collectors.toList()));
-        } else {
+        List<String> origins = splitOrigins(allowedOrigins);
+        // A '*' anywhere in the list -- not just as the entire value -- means wildcard.
+        // Treating "https://app.example.com, *" as an explicit allowlist would keep a
+        // reflected '*' origin alongside allowCredentials(true), which is the same hole.
+        boolean wildcard = origins.isEmpty() || origins.contains("*");
+        if (wildcard) {
             config.setAllowedOriginPatterns(List.of("*"));
+            // No credentials with a reflected wildcard origin.
+            config.setAllowCredentials(false);
+            log.warn("CORS_ALLOW_ORIGINS resolves to a wildcard, so every origin is permitted "
+                    + "without credentials. Set CORS_ALLOW_ORIGINS to a comma-separated allowlist "
+                    + "for any reachable deployment.");
+        } else {
+            config.setAllowedOrigins(origins);
+            config.setAllowCredentials(true);
         }
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
-        config.setAllowCredentials(true);
         config.setMaxAge(3600L);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", config);
         return source;
+    }
+
+    private static List<String> splitOrigins(String value) {
+        if (value == null || value.isBlank()) {
+            return List.of();
+        }
+        return java.util.Arrays.stream(value.split(","))
+                .map(String::trim)
+                .filter(origin -> !origin.isEmpty())
+                .collect(Collectors.toList());
     }
 }

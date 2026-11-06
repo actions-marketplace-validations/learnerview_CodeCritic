@@ -1104,3 +1104,6 @@ li.CodeMirror-hint-active {
     .bar { grid-column: 1 / -1; order: 3; }
 }
 
+
+.result-tabs, .structured-result { display: none !important; }
+#output { display: block !important; }
